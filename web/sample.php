@@ -1,4 +1,6 @@
 <?php
+
+declare(strict_types=1);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -43,8 +45,6 @@ register_shutdown_function(function () {
     echo '</body></html>';
 });
 
-declare(strict_types=1);
-
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . "/logincheck.php";
 require_once __DIR__ . "/odata.php";
@@ -59,7 +59,7 @@ function uiColor(string $key, string $fallback): string
     return is_string($value) && trim($value) !== '' ? $value : $fallback;
 }
 
-function isBlankSampleValue(mixed $value): bool
+function isBlankSampleValue($value): bool
 {
     if ($value === null) {
         return true;
@@ -81,7 +81,7 @@ function isSubstanceFieldName(string $fieldName): bool
     return preg_match('/^[A-Z][a-z]? \([^)]+\)$/', $fieldName) === 1;
 }
 
-function numericSampleValue(mixed $value): ?float
+function numericSampleValue($value): ?float
 {
     if (isBlankSampleValue($value)) {
         return null;

@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -42,8 +43,6 @@ register_shutdown_function(function () {
     echo '<script>setTimeout(function(){location.reload();},5000);</script>';
     echo '</body></html>';
 });
-
-declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . "/logincheck.php";

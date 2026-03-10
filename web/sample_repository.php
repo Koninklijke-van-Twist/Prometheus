@@ -45,10 +45,17 @@ function parseSampleJsonFile(string $filePath): array
         return [];
     }
 
-    try {
-        $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-    } catch (JsonException $e) {
-        return [];
+    if (defined('JSON_THROW_ON_ERROR')) {
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            return [];
+        }
+    } else {
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
     }
 
     if (is_array($decoded) && isset($decoded[0]) && is_array($decoded[0])) {
@@ -187,7 +194,7 @@ function groupSummariesByDate(array $summaries): array
     return $groups;
 }
 
-function formatValueForView(mixed $value): string
+function formatValueForView($value): string
 {
     if (is_array($value) || is_object($value)) {
         return json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) ?: '-';
