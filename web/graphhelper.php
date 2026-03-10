@@ -20,16 +20,24 @@ function graphNormalizeNumber($value): ?float
     }
 
     $trimmed = trim($value);
-    if ($trimmed === '' || $trimmed === '-') {
+    if ($trimmed === '') {
+        return null;
+    }
+
+    if ($trimmed === '-') {
+        return 0.0;
+    }
+
+    if ($trimmed === '*') {
         return null;
     }
 
     $normalized = str_replace(',', '.', $trimmed);
-    if (!preg_match('/-?\d+(?:\.\d+)?/', $normalized, $matches)) {
+    if (!preg_match('/^-?\d+(?:\.\d+)?$/', $normalized)) {
         return null;
     }
 
-    return (float) $matches[0];
+    return (float) $normalized;
 }
 
 function graphFindFirstNumeric(array $row, array $candidateKeys): ?float
