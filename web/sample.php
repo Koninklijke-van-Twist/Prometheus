@@ -603,6 +603,81 @@ if ($fileParam === '') {
             background: #7bbf8f;
         }
 
+        .charts-grid {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 14px;
+        }
+
+        .chart-card {
+            border: 1px solid
+                <?= htmlspecialchars($ui['subtleBorder'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            border-radius: 10px;
+            padding: 10px;
+            background:
+                <?= htmlspecialchars($ui['subtleCardBackground'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+        }
+
+        .chart-title {
+            margin: 0 0 8px;
+            font-size: 14px;
+            color: var(--muted);
+        }
+
+        .chart-wrap {
+            position: relative;
+            height: 260px;
+        }
+
+        .chart-card.chart-card-compact .chart-wrap {
+            height: auto;
+            min-height: 0;
+        }
+
+        .chart-loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+            border: 2px solid #cbd9e7;
+            border-top-color: var(--brand);
+            animation: spin 0.8s linear infinite;
+        }
+
+        .is-hidden {
+            display: none !important;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .chart-empty {
+            font-size: 13px;
+            color: var(--muted);
+            padding: 8px 0 2px;
+        }
+
+        .chart-empty.subtle {
+            opacity: 0.78;
+            font-size: 12px;
+        }
+
         @media (max-width: 700px) {
             th {
                 width: 40%;
@@ -635,7 +710,8 @@ if ($fileParam === '') {
             <section class="card">
                 <div class="header-line">
                     <h1 style="margin:0;"><?= htmlspecialchars($summary['sampleId'], ENT_QUOTES, 'UTF-8') ?></h1>
-                    <div class="rating-pill report-pill" style="<?= htmlspecialchars($reportStatusStyle, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="rating-pill report-pill"
+                        style="<?= htmlspecialchars($reportStatusStyle, ENT_QUOTES, 'UTF-8') ?>">
                         <?= htmlspecialchars($reportStatusLabel, ENT_QUOTES, 'UTF-8') ?>
                     </div>
                 </div>
@@ -651,7 +727,9 @@ if ($fileParam === '') {
                     <div class="kv">
                         <b>Componentnummer</b><?= htmlspecialchars($summary['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
-                    <div class="kv"><b>Werkorder</b><?= htmlspecialchars((string) ($summary['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="kv">
+                        <b>Werkorder</b><?= htmlspecialchars((string) ($summary['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                    </div>
                     <div class="kv"><b>Fuel Type</b><?= htmlspecialchars($fuelType, ENT_QUOTES, 'UTF-8') ?></div>
                 </div>
             </section>
@@ -681,6 +759,44 @@ if ($fileParam === '') {
                         </tr>
                     </tbody>
                 </table>
+
+                <div class="charts-grid">
+                    <div class="chart-card" data-chart-key="viscosity">
+                        <h3 class="chart-title">Viscosity @ 100C</h3>
+                        <div class="chart-wrap">
+                            <div class="chart-loading"><span class="spinner"></span>Grafiek laden...</div>
+                            <canvas id="viscosityChart" class="is-hidden"></canvas>
+                            <div class="chart-empty is-hidden"></div>
+                        </div>
+                    </div>
+
+                    <div class="chart-card" data-chart-key="wear">
+                        <h3 class="chart-title">Wear</h3>
+                        <div class="chart-wrap">
+                            <div class="chart-loading"><span class="spinner"></span>Grafiek laden...</div>
+                            <canvas id="wearChart" class="is-hidden"></canvas>
+                            <div class="chart-empty is-hidden"></div>
+                        </div>
+                    </div>
+
+                    <div class="chart-card" data-chart-key="contaminants">
+                        <h3 class="chart-title">Contaminants</h3>
+                        <div class="chart-wrap">
+                            <div class="chart-loading"><span class="spinner"></span>Grafiek laden...</div>
+                            <canvas id="contaminantsChart" class="is-hidden"></canvas>
+                            <div class="chart-empty is-hidden"></div>
+                        </div>
+                    </div>
+
+                    <div class="chart-card" data-chart-key="oxidationSoot">
+                        <h3 class="chart-title">Oxidation en Soot</h3>
+                        <div class="chart-wrap">
+                            <div class="chart-loading"><span class="spinner"></span>Grafiek laden...</div>
+                            <canvas id="oxidationSootChart" class="is-hidden"></canvas>
+                            <div class="chart-empty is-hidden"></div>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <section class="card">
@@ -758,6 +874,222 @@ if ($fileParam === '') {
             </section>
         <?php endif; ?>
     </div>
+    <?php if ($error === null): ?>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+        <script>
+            (function ()
+            {
+                const chartCanvasIds = {
+                    viscosity: 'viscosityChart',
+                    wear: 'wearChart',
+                    contaminants: 'contaminantsChart',
+                    oxidationSoot: 'oxidationSootChart'
+                };
+
+                const setChartState = function (key, state, message)
+                {
+                    const card = document.querySelector('[data-chart-key="' + key + '"]');
+                    if (!card)
+                    {
+                        return;
+                    }
+
+                    card.classList.toggle('chart-card-compact', state === 'empty' || state === 'error');
+
+                    const loading = card.querySelector('.chart-loading');
+                    const empty = card.querySelector('.chart-empty');
+                    const canvas = card.querySelector('canvas');
+
+                    if (loading)
+                    {
+                        loading.classList.toggle('is-hidden', state !== 'loading');
+                    }
+
+                    if (empty)
+                    {
+                        empty.classList.toggle('is-hidden', state !== 'empty' && state !== 'error');
+                        empty.classList.add('subtle');
+                        if (state === 'empty' || state === 'error')
+                        {
+                            empty.textContent = message || 'Geen historische data beschikbaar voor dit Asset ID.';
+                        }
+                    }
+
+                    if (canvas)
+                    {
+                        canvas.classList.toggle('is-hidden', state !== 'ready');
+                    }
+                };
+
+                const hasRenderableData = function (chartData)
+                {
+                    if (!chartData || !Array.isArray(chartData.labels) || chartData.labels.length === 0)
+                    {
+                        return false;
+                    }
+
+                    const datasets = chartData.datasets || [];
+                    for (let i = 0; i < datasets.length; i++)
+                    {
+                        const values = datasets[i].data || [];
+                        for (let j = 0; j < values.length; j++)
+                        {
+                            if (values[j] !== null && values[j] !== undefined)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                };
+
+                const countKnownDataPoints = function (chartData)
+                {
+                    if (!chartData || !Array.isArray(chartData.labels) || chartData.labels.length === 0)
+                    {
+                        return 0;
+                    }
+
+                    const datasets = chartData.datasets || [];
+                    let count = 0;
+
+                    for (let i = 0; i < chartData.labels.length; i++)
+                    {
+                        let knownAtIndex = false;
+                        for (let d = 0; d < datasets.length; d++)
+                        {
+                            const values = datasets[d].data || [];
+                            if (values[i] !== null && values[i] !== undefined)
+                            {
+                                knownAtIndex = true;
+                                break;
+                            }
+                        }
+
+                        if (knownAtIndex)
+                        {
+                            count++;
+                        }
+                    }
+
+                    return count;
+                };
+
+                const buildLineChart = function (canvasId, chartData)
+                {
+                    const canvas = document.getElementById(canvasId);
+                    if (!canvas || !chartData || !Array.isArray(chartData.labels) || chartData.labels.length === 0)
+                    {
+                        return;
+                    }
+
+                    const datasets = (chartData.datasets || []).map(function (dataset)
+                    {
+                        return {
+                            label: dataset.label || 'Serie',
+                            data: dataset.data || [],
+                            borderColor: dataset.borderColor || '#00529B',
+                            backgroundColor: dataset.backgroundColor || '#00529B',
+                            spanGaps: true,
+                            pointRadius: 3,
+                            pointHoverRadius: 4,
+                            tension: 0.25,
+                            fill: false,
+                        };
+                    });
+
+                    new Chart(canvas, {
+                        type: 'line',
+                        data: {
+                            labels: chartData.labels,
+                            datasets: datasets,
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'nearest',
+                                intersect: false,
+                            },
+                            scales: {
+                                x: {
+                                    ticks: {
+                                        maxRotation: 0,
+                                        autoSkip: true,
+                                    },
+                                },
+                                y: {
+                                    beginAtZero: false,
+                                },
+                            },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    position: 'bottom',
+                                },
+                            },
+                        },
+                    });
+                };
+
+                Object.keys(chartCanvasIds).forEach(function (key)
+                {
+                    setChartState(key, 'loading');
+                });
+
+                const dataUrl = 'sample_charts_data.php?file=' + encodeURIComponent(<?= json_encode($fileParam, JSON_UNESCAPED_UNICODE) ?>);
+
+                fetch(dataUrl, { cache: 'no-store' })
+                    .then(function (response)
+                    {
+                        if (!response.ok)
+                        {
+                            throw new Error('Kan grafiekdata niet laden (' + response.status + ').');
+                        }
+
+                        return response.json();
+                    })
+                    .then(function (payload)
+                    {
+                        if (!payload || payload.ok !== true)
+                        {
+                            throw new Error((payload && payload.message) ? payload.message : 'Onbekende fout bij laden van grafieken.');
+                        }
+
+                        const charts = payload.charts || {};
+                        Object.keys(chartCanvasIds).forEach(function (key)
+                        {
+                            const card = document.querySelector('[data-chart-key="' + key + '"]');
+                            const titleText = card ? ((card.querySelector('.chart-title') || {}).textContent || key) : key;
+                            const chartData = charts[key] || null;
+                            if (!hasRenderableData(chartData))
+                            {
+                                setChartState(key, 'empty', 'Grafiek voor ' + titleText + ' is nog niet beschikbaar.');
+                                return;
+                            }
+
+                            if (countKnownDataPoints(chartData) < 2)
+                            {
+                                setChartState(key, 'empty', 'Grafiek voor ' + titleText + ' is nog niet beschikbaar.');
+                                return;
+                            }
+
+                            buildLineChart(chartCanvasIds[key], chartData);
+                            setChartState(key, 'ready');
+                        });
+                    })
+                    .catch(function (error)
+                    {
+                        const message = error && error.message ? error.message : 'Onbekende fout bij laden van grafieken.';
+                        Object.keys(chartCanvasIds).forEach(function (key)
+                        {
+                            setChartState(key, 'error', message);
+                        });
+                    });
+            })();
+        </script>
+    <?php endif; ?>
 </body>
 
 </html>
