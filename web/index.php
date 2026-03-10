@@ -147,6 +147,22 @@ function formatDutchDateHeader(string $input, string $fallback = ''): string
     return $dt->format('j') . ' ' . $monthName . ' ' . $dt->format('Y');
 }
 
+function cardSearchPayload(array $item, array $reportStatus, string $headerDate): string
+{
+    $parts = [
+        (string) ($item['sampleId'] ?? ''),
+        (string) ($reportStatus['label'] ?? ''),
+        !empty($item['actionRequired']) ? 'action required' : '',
+        (string) ($item['accountDisplay'] ?? ($item['accountName'] ?? '')),
+        (string) ($item['componentNumber'] ?? ''),
+        (string) ($item['workOrder'] ?? ''),
+        (string) ($item['contaminationRating'] ?? ''),
+        $headerDate,
+    ];
+
+    return strtolower(trim(implode(' ', $parts)));
+}
+
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
 
@@ -374,6 +390,13 @@ $ui = [
             justify-content: space-between;
         }
 
+        .filter-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+
         .filters-head label {
             font-size: 13px;
             color: var(--muted);
@@ -387,6 +410,16 @@ $ui = [
             background: #fff;
             color: var(--ink);
             font: inherit;
+        }
+
+        .filters-head input[type="search"] {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 6px 10px;
+            background: #fff;
+            color: var(--ink);
+            font: inherit;
+            min-width: min(360px, 100%);
         }
 
         .filter-list {
@@ -570,13 +603,17 @@ $ui = [
         <?php if (count($summaries) > 0): ?>
             <section class="filters">
                 <form method="get" class="filters-head" id="yearFilterForm">
-                    <div>
+                    <div class="filter-controls">
                         <label for="yearSelect">Jaar</label>
                         <select id="yearSelect" name="jaar" onchange="this.form.submit()">
                             <?php foreach ($availableYears as $year): ?>
                                 <option value="<?= $year ?>" <?= $selectedYear === $year ? 'selected' : '' ?>><?= $year ?></option>
                             <?php endforeach; ?>
                         </select>
+                        <label for="overviewSearch">Zoeken</label>
+                        <input type="search" id="overviewSearch"
+                            placeholder="Zoek in sample, status, account, componentnummer, werkorder, contamination"
+                            autocomplete="off">
                     </div>
                     <div style="font-size:13px;color:var(--muted);">
                         Zichtbaar in <?= htmlspecialchars((string) ($selectedYear ?? '-'), ENT_QUOTES, 'UTF-8') ?>:
@@ -621,9 +658,11 @@ $ui = [
                     <div class="grid">
                         <?php foreach ($group['items'] as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
+                            <?php $searchPayload = cardSearchPayload($item, $reportStatus, $headerDate); ?>
                             <a class="card" href="sample.php?file=<?= urlencode($item['file']) ?>"
                                 data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
+                                data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
                                 style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                 <div class="card-head">
                                     <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
@@ -635,10 +674,14 @@ $ui = [
                                             style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                 </div>
-                                <div class="row">Account: <?= htmlspecialchars($item['accountName'], ENT_QUOTES, 'UTF-8') ?></div>
-                                <div class="row">Asset ID: <?= htmlspecialchars($item['assetId'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <div class="row">Account:
+                                    <?= htmlspecialchars((string) ($item['accountDisplay'] ?? $item['accountName']), ENT_QUOTES, 'UTF-8') ?>
+                                </div>
                                 <div class="row">Componentnummer:
                                     <?= htmlspecialchars($item['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
+                                </div>
+                                <div class="row">Werkorder:
+                                    <?= htmlspecialchars($item['workOrder'], ENT_QUOTES, 'UTF-8') ?>
                                 </div>
                                 <div class="row">Contamination status:
                                     <?= htmlspecialchars($item['contaminationRating'], ENT_QUOTES, 'UTF-8') ?>
@@ -655,10 +698,11 @@ $ui = [
         {
             const statusCheckboxes = Array.from(document.querySelectorAll('.js-status-filter'));
             const actionOnlyCheckbox = document.getElementById('actionRequiredOnly');
+            const searchInput = document.getElementById('overviewSearch');
             const cards = Array.from(document.querySelectorAll('.card[data-status]'));
             const groups = Array.from(document.querySelectorAll('.js-group'));
 
-            if (cards.length === 0 || statusCheckboxes.length === 0)
+            if (cards.length === 0)
             {
                 return;
             }
@@ -675,14 +719,17 @@ $ui = [
                     })
                 );
                 const actionOnly = actionOnlyCheckbox ? actionOnlyCheckbox.checked : false;
+                const needle = searchInput ? searchInput.value.trim().toLowerCase() : '';
 
                 cards.forEach(function (card)
                 {
                     const status = card.dataset.status || '__unknown__';
                     const hasActionRequired = card.dataset.actionRequired === '1';
-                    const statusVisible = activeStatuses.has(status);
+                    const statusVisible = statusCheckboxes.length === 0 ? true : activeStatuses.has(status);
                     const actionVisible = !actionOnly || hasActionRequired;
-                    card.classList.toggle('hidden', !(statusVisible && actionVisible));
+                    const haystack = (card.dataset.search || '').toLowerCase();
+                    const searchVisible = needle === '' || haystack.indexOf(needle) !== -1;
+                    card.classList.toggle('hidden', !(statusVisible && actionVisible && searchVisible));
                 });
 
                 groups.forEach(function (group)
@@ -700,6 +747,11 @@ $ui = [
             if (actionOnlyCheckbox)
             {
                 actionOnlyCheckbox.addEventListener('change', applyFilters);
+            }
+
+            if (searchInput)
+            {
+                searchInput.addEventListener('input', applyFilters);
             }
 
             applyFilters();

@@ -607,14 +607,16 @@ if ($fileParam === '') {
                 <h1 style="margin:0;"><?= htmlspecialchars($summary['sampleId'], ENT_QUOTES, 'UTF-8') ?></h1>
                 <div class="summary-grid">
                     <div class="kv"><b>Datum</b><?= htmlspecialchars($summary['dateDisplay'], ENT_QUOTES, 'UTF-8') ?></div>
-                    <div class="kv"><b>Account</b><?= htmlspecialchars($summary['accountName'], ENT_QUOTES, 'UTF-8') ?>
+                    <div class="kv"><b>Account</b><?= htmlspecialchars($summaryAccountLine, ENT_QUOTES, 'UTF-8') ?>
                     </div>
                     <div class="kv"><b>Asset ID</b><?= htmlspecialchars($summary['assetId'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Asset name</b><?= htmlspecialchars($summary['assetName'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
                     <div class="kv"><b>Asset class</b><?= htmlspecialchars($summary['assetClass'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
-                        <div class="kv"><b>Componentnummer</b><?= htmlspecialchars($summary['componentNumber'], ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="kv">
+                        <b>Componentnummer</b><?= htmlspecialchars($summary['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
+                    </div>
                     <div class="kv"><b>Report
                             status</b><?= htmlspecialchars($summary['reportStatus'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Fuel Type</b><?= htmlspecialchars($fuelType, ENT_QUOTES, 'UTF-8') ?></div>

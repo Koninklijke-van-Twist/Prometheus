@@ -141,6 +141,48 @@ function extractComponentNumber(?string $unitId): string
     return $candidate !== '' ? $candidate : $trimmed;
 }
 
+function formatWorkOrder(?string $workId): string
+{
+    if ($workId === null) {
+        return '-';
+    }
+
+    $trimmed = trim($workId);
+    if ($trimmed === '' || $trimmed === '-') {
+        return '-';
+    }
+
+    if (stripos($trimmed, 'WO') === 0) {
+        return $trimmed;
+    }
+
+    if (strpos($trimmed, '40') === 0) {
+        return $trimmed;
+    }
+
+    return 'WO' . $trimmed;
+}
+
+function formatAccountDisplay(?string $accountName, ?string $accountId): string
+{
+    $name = trim((string) $accountName);
+    $id = trim((string) $accountId);
+
+    if ($name !== '' && $id !== '') {
+        return $name . ' (' . $id . ')';
+    }
+
+    if ($name !== '') {
+        return $name;
+    }
+
+    if ($id !== '') {
+        return $id;
+    }
+
+    return '-';
+}
+
 function normalizeSampleSummary(string $filePath, array $row): array
 {
     $sampleId = firstNotEmpty($row, ['LIMS Sample ID', 'Sample Bottle ID']) ?? pathinfo($filePath, PATHINFO_FILENAME);
@@ -159,15 +201,22 @@ function normalizeSampleSummary(string $filePath, array $row): array
     $comments = firstNotEmpty($row, ['Comments']) ?? '';
 
     $unitId = firstNotEmpty($row, ['Unit ID']) ?? '-';
+    $workId = firstNotEmpty($row, ['Work ID']) ?? '-';
+    $accountName = firstNotEmpty($row, ['Account Name']) ?? '-';
+    $accountId = firstNotEmpty($row, ['Account ID']) ?? '-';
 
     return [
         'file' => basename($filePath),
         'path' => $filePath,
         'sampleId' => $sampleId,
-        'accountName' => firstNotEmpty($row, ['Account Name']) ?? '-',
+        'accountName' => $accountName,
+        'accountId' => $accountId,
+        'accountDisplay' => formatAccountDisplay($accountName, $accountId),
         'assetId' => firstNotEmpty($row, ['Asset ID']) ?? '-',
         'unitId' => $unitId,
         'componentNumber' => extractComponentNumber($unitId),
+        'workId' => $workId,
+        'workOrder' => formatWorkOrder($workId),
         'assetName' => firstNotEmpty($row, ['Asset Name']) ?? '-',
         'assetClass' => firstNotEmpty($row, ['Asset Class']) ?? '-',
         'sampleStatus' => firstNotEmpty($row, ['Sample Status']) ?? '-',
