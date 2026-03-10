@@ -160,12 +160,20 @@ foreach ($summaries as $index => $summary) {
 }
 
 $availableYears = array_map('intval', array_keys($availableYearMap));
-sort($availableYears);
+rsort($availableYears);
 $latestYear = !empty($availableYears) ? max($availableYears) : null;
 
+$requestedYearRaw = null;
+if (isset($_GET['jaar']) && is_string($_GET['jaar'])) {
+    $requestedYearRaw = trim($_GET['jaar']);
+} elseif (isset($_GET['year']) && is_string($_GET['year'])) {
+    // Backward compatibility for old links.
+    $requestedYearRaw = trim($_GET['year']);
+}
+
 $selectedYear = $latestYear;
-if (isset($_GET['year']) && is_string($_GET['year']) && ctype_digit($_GET['year'])) {
-    $requestedYear = (int) $_GET['year'];
+if ($requestedYearRaw !== null && $requestedYearRaw !== '' && ctype_digit($requestedYearRaw)) {
+    $requestedYear = (int) $requestedYearRaw;
     if (in_array($requestedYear, $availableYears, true)) {
         $selectedYear = $requestedYear;
     }
@@ -185,6 +193,7 @@ foreach ($visibleSummaries as $summary) {
     $statusFilterMap[$statusMeta['key']] = [
         'key' => $statusMeta['key'],
         'label' => $statusMeta['label'],
+        'inlineStyle' => $statusMeta['inlineStyle'],
     ];
 
     if (!empty($summary['actionRequired'])) {
@@ -400,6 +409,11 @@ $ui = [
             margin: 0;
         }
 
+        .filter-item .chip {
+            font-size: 12px;
+            line-height: 1.1;
+        }
+
         .filters-hint {
             margin-top: 8px;
             font-size: 12px;
@@ -558,14 +572,14 @@ $ui = [
                 <form method="get" class="filters-head" id="yearFilterForm">
                     <div>
                         <label for="yearSelect">Jaar</label>
-                        <select id="yearSelect" name="year" onchange="this.form.submit()">
+                        <select id="yearSelect" name="jaar" onchange="this.form.submit()">
                             <?php foreach ($availableYears as $year): ?>
                                 <option value="<?= $year ?>" <?= $selectedYear === $year ? 'selected' : '' ?>><?= $year ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
                     <div style="font-size:13px;color:var(--muted);">
-                        Zichtbaar in <?= htmlspecialchars((string) $selectedYear, ENT_QUOTES, 'UTF-8') ?>:
+                        Zichtbaar in <?= htmlspecialchars((string) ($selectedYear ?? '-'), ENT_QUOTES, 'UTF-8') ?>:
                         <strong><?= count($visibleSummaries) ?></strong>
                     </div>
                 </form>
@@ -575,13 +589,14 @@ $ui = [
                             <label class="filter-item">
                                 <input type="checkbox" class="js-status-filter"
                                     value="<?= htmlspecialchars((string) $statusFilter['key'], ENT_QUOTES, 'UTF-8') ?>" checked>
-                                <span><?= htmlspecialchars((string) $statusFilter['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <span class="chip"
+                                    style="<?= htmlspecialchars((string) $statusFilter['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) $statusFilter['label'], ENT_QUOTES, 'UTF-8') ?></span>
                             </label>
                         <?php endforeach; ?>
                         <?php if ($hasActionRequired): ?>
                             <label class="filter-item">
                                 <input type="checkbox" id="actionRequiredOnly">
-                                <span>Alleen Action Required</span>
+                                <span class="chip chip-action">Alleen Action Required</span>
                             </label>
                         <?php endif; ?>
                     </div>
@@ -636,27 +651,33 @@ $ui = [
         <?php endif; ?>
     </div>
     <script>
-        (function () {
+        (function ()
+        {
             const statusCheckboxes = Array.from(document.querySelectorAll('.js-status-filter'));
             const actionOnlyCheckbox = document.getElementById('actionRequiredOnly');
             const cards = Array.from(document.querySelectorAll('.card[data-status]'));
             const groups = Array.from(document.querySelectorAll('.js-group'));
 
-            if (cards.length === 0 || statusCheckboxes.length === 0) {
+            if (cards.length === 0 || statusCheckboxes.length === 0)
+            {
                 return;
             }
 
-            const applyFilters = function () {
+            const applyFilters = function ()
+            {
                 const activeStatuses = new Set(
-                    statusCheckboxes.filter(function (checkbox) {
+                    statusCheckboxes.filter(function (checkbox)
+                    {
                         return checkbox.checked;
-                    }).map(function (checkbox) {
+                    }).map(function (checkbox)
+                    {
                         return checkbox.value;
                     })
                 );
                 const actionOnly = actionOnlyCheckbox ? actionOnlyCheckbox.checked : false;
 
-                cards.forEach(function (card) {
+                cards.forEach(function (card)
+                {
                     const status = card.dataset.status || '__unknown__';
                     const hasActionRequired = card.dataset.actionRequired === '1';
                     const statusVisible = activeStatuses.has(status);
@@ -664,17 +685,20 @@ $ui = [
                     card.classList.toggle('hidden', !(statusVisible && actionVisible));
                 });
 
-                groups.forEach(function (group) {
+                groups.forEach(function (group)
+                {
                     const visibleInGroup = group.querySelectorAll('.card[data-status]:not(.hidden)').length;
                     group.classList.toggle('hidden', visibleInGroup === 0);
                 });
             };
 
-            statusCheckboxes.forEach(function (checkbox) {
+            statusCheckboxes.forEach(function (checkbox)
+            {
                 checkbox.addEventListener('change', applyFilters);
             });
 
-            if (actionOnlyCheckbox) {
+            if (actionOnlyCheckbox)
+            {
                 actionOnlyCheckbox.addEventListener('change', applyFilters);
             }
 
