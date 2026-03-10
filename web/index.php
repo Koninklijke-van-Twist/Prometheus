@@ -151,6 +151,7 @@ function cardSearchPayload(array $item, array $reportStatus, string $headerDate)
 {
     $parts = [
         (string) ($item['sampleId'] ?? ''),
+        (string) ($item['sampler'] ?? ''),
         (string) ($reportStatus['label'] ?? ''),
         !empty($item['actionRequired']) ? 'action required' : '',
         (string) ($item['accountDisplay'] ?? ($item['accountName'] ?? '')),
@@ -222,6 +223,11 @@ usort($statusFilters, static function (array $a, array $b): int {
 });
 
 $groups = groupSummariesByDate($visibleSummaries);
+
+$currentUserEmail = '';
+if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
+    $currentUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+}
 
 $pathOk = $samplePathResolved !== '' && is_dir($samplePathResolved);
 
@@ -502,6 +508,29 @@ $ui = [
             margin-bottom: 8px;
         }
 
+        .sample-title {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            flex-wrap: wrap;
+        }
+
+        .sampler-tag {
+            font-size: 11px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 2px 8px;
+            color: var(--muted);
+            background: #fff;
+        }
+
+        .sampler-tag.match {
+            background: var(--brand-soft);
+            border-color: var(--brand);
+            color: var(--brand);
+            font-weight: 700;
+        }
+
         .chip {
             font-size: 12px;
             background: var(--ok);
@@ -659,13 +688,26 @@ $ui = [
                         <?php foreach ($group['items'] as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
                             <?php $searchPayload = cardSearchPayload($item, $reportStatus, $headerDate); ?>
+                            <?php
+                            $sampler = trim((string) ($item['sampler'] ?? '-'));
+                            if ($sampler === '') {
+                                $sampler = '-';
+                            }
+                            $samplerLower = strtolower($sampler);
+                            $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
+                            ?>
                             <a class="card" href="sample.php?file=<?= urlencode($item['file']) ?>"
                                 data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
                                 data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
                                 style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                 <div class="card-head">
-                                    <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                    <div class="sample-title">
+                                        <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                        <span class="sampler-tag<?= $samplerMatchesUser ? ' match' : '' ?>">
+                                            <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
+                                        </span>
+                                    </div>
                                     <div class="chip-stack">
                                         <?php if (!empty($item['actionRequired'])): ?>
                                             <span class="chip chip-action">Action Required</span>

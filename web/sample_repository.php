@@ -204,6 +204,7 @@ function normalizeSampleSummary(string $filePath, array $row): array
     $workId = firstNotEmpty($row, ['Work ID']) ?? '-';
     $accountName = firstNotEmpty($row, ['Account Name']) ?? '-';
     $accountId = firstNotEmpty($row, ['Account ID']) ?? '-';
+    $sampler = firstNotEmpty($row, ['Sampler']) ?? '-';
 
     return [
         'file' => basename($filePath),
@@ -212,6 +213,7 @@ function normalizeSampleSummary(string $filePath, array $row): array
         'accountName' => $accountName,
         'accountId' => $accountId,
         'accountDisplay' => formatAccountDisplay($accountName, $accountId),
+        'sampler' => $sampler,
         'assetId' => firstNotEmpty($row, ['Asset ID']) ?? '-',
         'unitId' => $unitId,
         'componentNumber' => extractComponentNumber($unitId),
