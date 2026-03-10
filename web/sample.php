@@ -614,8 +614,7 @@ if ($fileParam === '') {
                     </div>
                     <div class="kv"><b>Asset class</b><?= htmlspecialchars($summary['assetClass'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
-                    <div class="kv"><b>Sample
-                            status</b><?= htmlspecialchars($summary['sampleStatus'], ENT_QUOTES, 'UTF-8') ?></div>
+                        <div class="kv"><b>Componentnummer</b><?= htmlspecialchars($summary['componentNumber'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Report
                             status</b><?= htmlspecialchars($summary['reportStatus'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Fuel Type</b><?= htmlspecialchars($fuelType, ENT_QUOTES, 'UTF-8') ?></div>

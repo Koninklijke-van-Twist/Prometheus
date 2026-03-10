@@ -124,6 +124,23 @@ function hasActionRequiredComment(?string $comment): bool
     return true;
 }
 
+function extractComponentNumber(?string $unitId): string
+{
+    if ($unitId === null) {
+        return '-';
+    }
+
+    $trimmed = trim($unitId);
+    if ($trimmed === '' || $trimmed === '-') {
+        return '-';
+    }
+
+    $parts = explode('/', $trimmed);
+    $candidate = trim((string) end($parts));
+
+    return $candidate !== '' ? $candidate : $trimmed;
+}
+
 function normalizeSampleSummary(string $filePath, array $row): array
 {
     $sampleId = firstNotEmpty($row, ['LIMS Sample ID', 'Sample Bottle ID']) ?? pathinfo($filePath, PATHINFO_FILENAME);
@@ -141,12 +158,16 @@ function normalizeSampleSummary(string $filePath, array $row): array
 
     $comments = firstNotEmpty($row, ['Comments']) ?? '';
 
+    $unitId = firstNotEmpty($row, ['Unit ID']) ?? '-';
+
     return [
         'file' => basename($filePath),
         'path' => $filePath,
         'sampleId' => $sampleId,
         'accountName' => firstNotEmpty($row, ['Account Name']) ?? '-',
         'assetId' => firstNotEmpty($row, ['Asset ID']) ?? '-',
+        'unitId' => $unitId,
+        'componentNumber' => extractComponentNumber($unitId),
         'assetName' => firstNotEmpty($row, ['Asset Name']) ?? '-',
         'assetClass' => firstNotEmpty($row, ['Asset Class']) ?? '-',
         'sampleStatus' => firstNotEmpty($row, ['Sample Status']) ?? '-',

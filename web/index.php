@@ -74,6 +74,7 @@ function reportStatusMeta(string $status): array
         $style = $styles[$normalized];
 
         return [
+            'key' => $normalized,
             'label' => (string) ($style['label'] ?? $status),
             'borderColor' => (string) ($style['border'] ?? '#c8d4d6'),
             'inlineStyle' => 'background:' . ($style['background'] ?? '#edf1f2')
@@ -84,6 +85,7 @@ function reportStatusMeta(string $status): array
     }
 
     return [
+        'key' => '__unknown__',
         'label' => $status !== '' ? $status : (string) ($unknown['label'] ?? 'Onbekend'),
         'borderColor' => (string) ($unknown['border'] ?? '#c8d4d6'),
         'inlineStyle' => 'background:' . ($unknown['background'] ?? '#edf1f2')
@@ -93,9 +95,108 @@ function reportStatusMeta(string $status): array
     ];
 }
 
+function extractReportYearFromFile(string $fileName): ?int
+{
+    $baseName = basename($fileName);
+    if (!preg_match('/\[?(\d{10,13})\]?(?=\.json$)/i', $baseName, $matches)) {
+        return null;
+    }
+
+    $timestampRaw = $matches[1] ?? '';
+    if ($timestampRaw === '' || !ctype_digit($timestampRaw)) {
+        return null;
+    }
+
+    $timestamp = (int) $timestampRaw;
+    if (strlen($timestampRaw) === 13) {
+        $timestamp = (int) floor($timestamp / 1000);
+    }
+
+    if ($timestamp <= 0) {
+        return null;
+    }
+
+    return (int) date('Y', $timestamp);
+}
+
+function formatDutchDateHeader(string $input, string $fallback = ''): string
+{
+    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $input);
+    if (!$dt) {
+        return $fallback !== '' ? $fallback : $input;
+    }
+
+    $months = [
+        1 => 'januari',
+        2 => 'februari',
+        3 => 'maart',
+        4 => 'april',
+        5 => 'mei',
+        6 => 'juni',
+        7 => 'juli',
+        8 => 'augustus',
+        9 => 'september',
+        10 => 'oktober',
+        11 => 'november',
+        12 => 'december',
+    ];
+
+    $monthIndex = (int) $dt->format('n');
+    $monthName = $months[$monthIndex] ?? $dt->format('m');
+
+    return $dt->format('j') . ' ' . $monthName . ' ' . $dt->format('Y');
+}
+
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
-$groups = groupSummariesByDate($summaries);
+
+$availableYearMap = [];
+foreach ($summaries as $index => $summary) {
+    $year = extractReportYearFromFile((string) ($summary['file'] ?? ''));
+    $summaries[$index]['fileYear'] = $year;
+    if ($year !== null) {
+        $availableYearMap[$year] = true;
+    }
+}
+
+$availableYears = array_map('intval', array_keys($availableYearMap));
+sort($availableYears);
+$latestYear = !empty($availableYears) ? max($availableYears) : null;
+
+$selectedYear = $latestYear;
+if (isset($_GET['year']) && is_string($_GET['year']) && ctype_digit($_GET['year'])) {
+    $requestedYear = (int) $_GET['year'];
+    if (in_array($requestedYear, $availableYears, true)) {
+        $selectedYear = $requestedYear;
+    }
+}
+
+$visibleSummaries = $summaries;
+if ($selectedYear !== null) {
+    $visibleSummaries = array_values(array_filter($summaries, static function (array $summary) use ($selectedYear): bool {
+        return (int) ($summary['fileYear'] ?? 0) === $selectedYear;
+    }));
+}
+
+$statusFilterMap = [];
+$hasActionRequired = false;
+foreach ($visibleSummaries as $summary) {
+    $statusMeta = reportStatusMeta((string) ($summary['reportStatus'] ?? ''));
+    $statusFilterMap[$statusMeta['key']] = [
+        'key' => $statusMeta['key'],
+        'label' => $statusMeta['label'],
+    ];
+
+    if (!empty($summary['actionRequired'])) {
+        $hasActionRequired = true;
+    }
+}
+$statusFilters = array_values($statusFilterMap);
+usort($statusFilters, static function (array $a, array $b): int {
+    return strcasecmp((string) $a['label'], (string) $b['label']);
+});
+
+$groups = groupSummariesByDate($visibleSummaries);
 
 $pathOk = $samplePathResolved !== '' && is_dir($samplePathResolved);
 
@@ -247,6 +348,64 @@ $ui = [
             opacity: 0.92;
         }
 
+        .filters {
+            margin-top: 14px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-top-width: 4px;
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .filters-head {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .filters-head label {
+            font-size: 13px;
+            color: var(--muted);
+            margin-right: 6px;
+        }
+
+        .filters-head select {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 5px 8px;
+            background: #fff;
+            color: var(--ink);
+            font: inherit;
+        }
+
+        .filter-list {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+        }
+
+        .filter-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--ink);
+            white-space: nowrap;
+        }
+
+        .filter-item input {
+            margin: 0;
+        }
+
+        .filters-hint {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
         .group {
             margin-top: 24px;
         }
@@ -312,9 +471,9 @@ $ui = [
 
         .chip-stack {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             gap: 6px;
-            align-items: flex-end;
+            align-items: center;
         }
 
         .chip-action {
@@ -354,6 +513,10 @@ $ui = [
             padding: 10px 12px;
         }
 
+        .hidden {
+            display: none !important;
+        }
+
         @media (max-width: 700px) {
             .top {
                 align-items: flex-start;
@@ -390,6 +553,43 @@ $ui = [
             <p>Bekijk beschikbare samples en klik door voor detailinformatie per sample.</p>
         </section>
 
+        <?php if (count($summaries) > 0): ?>
+            <section class="filters">
+                <form method="get" class="filters-head" id="yearFilterForm">
+                    <div>
+                        <label for="yearSelect">Jaar</label>
+                        <select id="yearSelect" name="year" onchange="this.form.submit()">
+                            <?php foreach ($availableYears as $year): ?>
+                                <option value="<?= $year ?>" <?= $selectedYear === $year ? 'selected' : '' ?>><?= $year ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div style="font-size:13px;color:var(--muted);">
+                        Zichtbaar in <?= htmlspecialchars((string) $selectedYear, ENT_QUOTES, 'UTF-8') ?>:
+                        <strong><?= count($visibleSummaries) ?></strong>
+                    </div>
+                </form>
+                <?php if (!empty($statusFilters) || $hasActionRequired): ?>
+                    <div class="filter-list" id="statusFilterList">
+                        <?php foreach ($statusFilters as $statusFilter): ?>
+                            <label class="filter-item">
+                                <input type="checkbox" class="js-status-filter"
+                                    value="<?= htmlspecialchars((string) $statusFilter['key'], ENT_QUOTES, 'UTF-8') ?>" checked>
+                                <span><?= htmlspecialchars((string) $statusFilter['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                            </label>
+                        <?php endforeach; ?>
+                        <?php if ($hasActionRequired): ?>
+                            <label class="filter-item">
+                                <input type="checkbox" id="actionRequiredOnly">
+                                <span>Alleen Action Required</span>
+                            </label>
+                        <?php endif; ?>
+                    </div>
+                    <div class="filters-hint">Vink statussen uit om ze te verbergen.</div>
+                <?php endif; ?>
+            </section>
+        <?php endif; ?>
+
         <?php if (!$pathOk): ?>
             <div class="warn">Het ingestelde sample pad bestaat niet:
                 <code><?= htmlspecialchars($samplePathResolved, ENT_QUOTES, 'UTF-8') ?></code>
@@ -399,27 +599,31 @@ $ui = [
                 <code><?= htmlspecialchars($samplePathResolved, ENT_QUOTES, 'UTF-8') ?></code>.
             </div>
         <?php else: ?>
-            <?php foreach ($groups as $group): ?>
-                <section class="group">
-                    <h2><?= htmlspecialchars($group['label'], ENT_QUOTES, 'UTF-8') ?> (<?= count($group['items']) ?>)</h2>
+            <?php foreach ($groups as $groupKey => $group): ?>
+                <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
+                <section class="group js-group">
+                    <h2><?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<?= count($group['items']) ?>)</h2>
                     <div class="grid">
                         <?php foreach ($group['items'] as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
                             <a class="card" href="sample.php?file=<?= urlencode($item['file']) ?>"
+                                data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
                                 style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                 <div class="card-head">
                                     <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
                                     <div class="chip-stack">
-                                        <span class="chip"
-                                            style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
                                         <?php if (!empty($item['actionRequired'])): ?>
                                             <span class="chip chip-action">Action Required</span>
                                         <?php endif; ?>
+                                        <span class="chip"
+                                            style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                 </div>
                                 <div class="row">Account: <?= htmlspecialchars($item['accountName'], ENT_QUOTES, 'UTF-8') ?></div>
                                 <div class="row">Asset ID: <?= htmlspecialchars($item['assetId'], ENT_QUOTES, 'UTF-8') ?></div>
-                                <div class="row">Asset class: <?= htmlspecialchars($item['assetClass'], ENT_QUOTES, 'UTF-8') ?>
+                                <div class="row">Componentnummer:
+                                    <?= htmlspecialchars($item['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
                                 </div>
                                 <div class="row">Contamination status:
                                     <?= htmlspecialchars($item['contaminationRating'], ENT_QUOTES, 'UTF-8') ?>
@@ -431,6 +635,52 @@ $ui = [
             <?php endforeach; ?>
         <?php endif; ?>
     </div>
+    <script>
+        (function () {
+            const statusCheckboxes = Array.from(document.querySelectorAll('.js-status-filter'));
+            const actionOnlyCheckbox = document.getElementById('actionRequiredOnly');
+            const cards = Array.from(document.querySelectorAll('.card[data-status]'));
+            const groups = Array.from(document.querySelectorAll('.js-group'));
+
+            if (cards.length === 0 || statusCheckboxes.length === 0) {
+                return;
+            }
+
+            const applyFilters = function () {
+                const activeStatuses = new Set(
+                    statusCheckboxes.filter(function (checkbox) {
+                        return checkbox.checked;
+                    }).map(function (checkbox) {
+                        return checkbox.value;
+                    })
+                );
+                const actionOnly = actionOnlyCheckbox ? actionOnlyCheckbox.checked : false;
+
+                cards.forEach(function (card) {
+                    const status = card.dataset.status || '__unknown__';
+                    const hasActionRequired = card.dataset.actionRequired === '1';
+                    const statusVisible = activeStatuses.has(status);
+                    const actionVisible = !actionOnly || hasActionRequired;
+                    card.classList.toggle('hidden', !(statusVisible && actionVisible));
+                });
+
+                groups.forEach(function (group) {
+                    const visibleInGroup = group.querySelectorAll('.card[data-status]:not(.hidden)').length;
+                    group.classList.toggle('hidden', visibleInGroup === 0);
+                });
+            };
+
+            statusCheckboxes.forEach(function (checkbox) {
+                checkbox.addEventListener('change', applyFilters);
+            });
+
+            if (actionOnlyCheckbox) {
+                actionOnlyCheckbox.addEventListener('change', applyFilters);
+            }
+
+            applyFilters();
+        })();
+    </script>
 </body>
 
 </html>
