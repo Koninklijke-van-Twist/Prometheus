@@ -96,7 +96,17 @@ function numericSampleValue($value): ?float
 
 function contaminationRatingMeta(string $rating): array
 {
-    $normalized = strtolower(trim($rating));
+    return statusMeta($rating);
+}
+
+function reportStatusMeta(string $status): array
+{
+    return statusMeta($status);
+}
+
+function statusMeta(string $value): array
+{
+    $normalized = strtolower(trim($value));
     $config = $GLOBALS['prometheusConfig'] ?? [];
     $styles = $config['statusStyles'] ?? [];
     $unknownStyle = $config['unknownStatusStyle'] ?? [
@@ -108,7 +118,7 @@ function contaminationRatingMeta(string $rating): array
 
     if ($normalized !== '' && isset($styles[$normalized]) && is_array($styles[$normalized])) {
         $style = $styles[$normalized];
-        $label = (string) ($style['label'] ?? $rating);
+        $label = (string) ($style['label'] ?? $value);
         $inlineStyle = 'background:' . ($style['background'] ?? '#edf1f2')
             . ';color:' . ($style['text'] ?? '#405558')
             . ';border-color:' . ($style['border'] ?? '#c8d4d6')
@@ -117,7 +127,7 @@ function contaminationRatingMeta(string $rating): array
         return ['label' => $label, 'style' => $inlineStyle];
     }
 
-    $fallbackLabel = $rating !== '' ? $rating : (string) ($unknownStyle['label'] ?? 'Onbekend');
+    $fallbackLabel = $value !== '' ? $value : (string) ($unknownStyle['label'] ?? 'Onbekend');
     $fallbackStyle = 'background:' . ($unknownStyle['background'] ?? '#edf1f2')
         . ';color:' . ($unknownStyle['text'] ?? '#405558')
         . ';border-color:' . ($unknownStyle['border'] ?? '#c8d4d6')
@@ -196,6 +206,8 @@ $filledFields = [];
 $blankFields = [];
 $contaminationRating = '';
 $contaminationRatingStyle = 'background:#edf1f2;color:#405558;border-color:#c8d4d6;';
+$reportStatusLabel = '-';
+$reportStatusStyle = 'background:#edf1f2;color:#405558;border-color:#c8d4d6;';
 $fuelType = '-';
 $summaryAccountLine = '-';
 $summaryAssetClass = '-';
@@ -235,6 +247,9 @@ if ($fileParam === '') {
         $ratingMeta = contaminationRatingMeta($contaminationRating);
         $contaminationRatingStyle = (string) $ratingMeta['style'];
         $contaminationRating = $ratingMeta['label'];
+        $reportMeta = reportStatusMeta((string) ($summary['reportStatus'] ?? ''));
+        $reportStatusLabel = (string) ($reportMeta['label'] ?? '-');
+        $reportStatusStyle = (string) ($reportMeta['style'] ?? $reportStatusStyle);
         $fuelType = trim((string) ($row['Fuel Type'] ?? ''));
         if ($fuelType === '') {
             $fuelType = '-';
@@ -428,6 +443,20 @@ if ($fileParam === '') {
             white-space: nowrap;
         }
 
+        .report-pill {
+            padding: 8px 14px;
+            font-size: 14px;
+            font-weight: 800;
+        }
+
+        .header-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
         .summary-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -604,7 +633,12 @@ if ($fileParam === '') {
             <div class="warn"><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></div>
         <?php else: ?>
             <section class="card">
-                <h1 style="margin:0;"><?= htmlspecialchars($summary['sampleId'], ENT_QUOTES, 'UTF-8') ?></h1>
+                <div class="header-line">
+                    <h1 style="margin:0;"><?= htmlspecialchars($summary['sampleId'], ENT_QUOTES, 'UTF-8') ?></h1>
+                    <div class="rating-pill report-pill" style="<?= htmlspecialchars($reportStatusStyle, ENT_QUOTES, 'UTF-8') ?>">
+                        <?= htmlspecialchars($reportStatusLabel, ENT_QUOTES, 'UTF-8') ?>
+                    </div>
+                </div>
                 <div class="summary-grid">
                     <div class="kv"><b>Datum</b><?= htmlspecialchars($summary['dateDisplay'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Account</b><?= htmlspecialchars($summaryAccountLine, ENT_QUOTES, 'UTF-8') ?>
@@ -617,8 +651,7 @@ if ($fileParam === '') {
                     <div class="kv">
                         <b>Componentnummer</b><?= htmlspecialchars($summary['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
-                    <div class="kv"><b>Report
-                            status</b><?= htmlspecialchars($summary['reportStatus'], ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="kv"><b>Werkorder</b><?= htmlspecialchars((string) ($summary['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="kv"><b>Fuel Type</b><?= htmlspecialchars($fuelType, ENT_QUOTES, 'UTF-8') ?></div>
                 </div>
             </section>
