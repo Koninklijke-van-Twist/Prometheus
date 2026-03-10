@@ -582,7 +582,7 @@ if ($fileParam === '') {
                 <table>
                     <tbody>
                         <tr>
-                            <th>Account Name (Account ID)</th>
+                            <th>Account</th>
                             <td><?= htmlspecialchars($summaryAccountLine, ENT_QUOTES, 'UTF-8') ?></td>
                         </tr>
                         <tr>
@@ -620,13 +620,16 @@ if ($fileParam === '') {
                         $elementStyle = elementStyleForField((string) $item['key']);
                         $elementName = elementDisplayName((string) $item['key']);
                         ?>
-                        <div class="sub-card" style="--el-accent: <?= htmlspecialchars($elementStyle['accent'], ENT_QUOTES, 'UTF-8') ?>; --el-bg: <?= htmlspecialchars($elementStyle['bg'], ENT_QUOTES, 'UTF-8') ?>; --el-text: <?= htmlspecialchars($elementStyle['text'], ENT_QUOTES, 'UTF-8') ?>;">
+                        <div class="sub-card"
+                            style="--el-accent: <?= htmlspecialchars($elementStyle['accent'], ENT_QUOTES, 'UTF-8') ?>; --el-bg: <?= htmlspecialchars($elementStyle['bg'], ENT_QUOTES, 'UTF-8') ?>; --el-text: <?= htmlspecialchars($elementStyle['text'], ENT_QUOTES, 'UTF-8') ?>;">
                             <div class="sub-card-head">
                                 <div class="sub-name"><?= htmlspecialchars($elementName, ENT_QUOTES, 'UTF-8') ?></div>
-                                <span class="sub-symbol"><?= htmlspecialchars($elementStyle['symbol'], ENT_QUOTES, 'UTF-8') ?></span>
+                                <span
+                                    class="sub-symbol"><?= htmlspecialchars($elementStyle['symbol'], ENT_QUOTES, 'UTF-8') ?></span>
                             </div>
                             <div class="sub-value">
-                                <?= htmlspecialchars(formatValueForView($item['value']), ENT_QUOTES, 'UTF-8') ?></div>
+                                <?= htmlspecialchars(formatValueForView($item['value']), ENT_QUOTES, 'UTF-8') ?>
+                            </div>
                             <div class="sub-percent"><?= number_format($barPercent, 1, ',', '.') ?>% van totaal gemeten stoffen
                             </div>
                             <div class="bar">
