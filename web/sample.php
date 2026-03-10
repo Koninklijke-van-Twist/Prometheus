@@ -824,6 +824,7 @@ if ($fileParam === '') {
                             </div>
                             <div class="sub-value">
                                 <?= htmlspecialchars(formatValueForView($item['value']), ENT_QUOTES, 'UTF-8') ?>
+                                <small>ppm</small>
                             </div>
                             <div class="sub-percent"><?= number_format($barPercent, 1, ',', '.') ?>% van totaal gemeten stoffen
                             </div>
