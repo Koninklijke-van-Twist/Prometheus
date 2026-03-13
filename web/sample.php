@@ -1320,6 +1320,43 @@ if ($error === null && is_array($summary)) {
                         return;
                     }
 
+                    const selectedLabel = <?= json_encode((string) ($summary['dateDisplay'] ?? ''), JSON_UNESCAPED_UNICODE) ?>;
+                    const selectedIndex = selectedLabel !== '' ? chartData.labels.indexOf(selectedLabel) : -1;
+
+                    const selectedMarkerPlugin = {
+                        id: 'selectedMarkerLine',
+                        beforeDatasetsDraw: function (chart)
+                        {
+                            if (selectedIndex < 0)
+                            {
+                                return;
+                            }
+
+                            const xScale = chart.scales.x;
+                            const yScale = chart.scales.y;
+                            if (!xScale || !yScale)
+                            {
+                                return;
+                            }
+
+                            const x = xScale.getPixelForValue(selectedIndex);
+                            if (!isFinite(x))
+                            {
+                                return;
+                            }
+
+                            const ctx = chart.ctx;
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.lineWidth = 2;
+                            ctx.strokeStyle = 'rgba(15, 95, 87, 0.28)';
+                            ctx.moveTo(x, yScale.top);
+                            ctx.lineTo(x, yScale.bottom);
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+                    };
+
                     const datasets = (chartData.datasets || []).map(function (dataset)
                     {
                         return {
@@ -1328,8 +1365,26 @@ if ($error === null && is_array($summary)) {
                             borderColor: dataset.borderColor || '#00529B',
                             backgroundColor: dataset.backgroundColor || '#00529B',
                             spanGaps: true,
-                            pointRadius: 3,
-                            pointHoverRadius: 4,
+                            pointRadius: function (ctx)
+                            {
+                                return selectedIndex >= 0 && ctx.dataIndex === selectedIndex ? 7 : 3;
+                            },
+                            pointHoverRadius: function (ctx)
+                            {
+                                return selectedIndex >= 0 && ctx.dataIndex === selectedIndex ? 9 : 4;
+                            },
+                            pointBorderWidth: function (ctx)
+                            {
+                                return selectedIndex >= 0 && ctx.dataIndex === selectedIndex ? 2 : 1;
+                            },
+                            pointBorderColor: function (ctx)
+                            {
+                                return dataset.borderColor || '#00529B';
+                            },
+                            pointBackgroundColor: function (ctx)
+                            {
+                                return dataset.backgroundColor || '#00529B';
+                            },
                             tension: 0.25,
                             fill: false,
                         };
@@ -1366,6 +1421,7 @@ if ($error === null && is_array($summary)) {
                                 },
                             },
                         },
+                        plugins: [selectedMarkerPlugin],
                     });
                 };
 
