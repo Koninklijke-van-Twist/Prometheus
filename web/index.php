@@ -459,7 +459,7 @@ $dailyFetchRawResponse = trim((string) ($dailyFetch['responseBody'] ?? ''));
 if ($dailyFetchRawResponse === '') {
     $dailyFetchRawResponse = '(geen response body beschikbaar)';
 }
-if (empty($dailyFetch['ok'])) {
+if (!empty($dailyFetch['attempted']) && empty($dailyFetch['ok'])) {
     $dailyFetchWarning = 'onderhanden analyses nog niet binnengehaald';
 }
 
