@@ -331,3 +331,185 @@ function formatValueForView($value): string
 
     return $text === '' ? '-' : $text;
 }
+
+function getConfiguredInProgressCachePath(): string
+{
+    $config = $GLOBALS['mobilApiAuth'] ?? [];
+    if (!is_array($config)) {
+        $config = [];
+    }
+
+    $customFile = isset($config['inProgressCacheFile']) ? trim((string) $config['inProgressCacheFile']) : '';
+    if ($customFile !== '') {
+        return $customFile;
+    }
+
+    $cacheDir = isset($config['cacheDir']) ? trim((string) $config['cacheDir']) : '';
+    if ($cacheDir === '') {
+        $cacheDir = __DIR__ . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'mobil';
+    }
+
+    return rtrim($cacheDir, "\\/") . DIRECTORY_SEPARATOR . 'in-progress-reports.json';
+}
+
+function loadInProgressSummariesFromCache(string $cacheFile): array
+{
+    $rows = loadInProgressRowsFromCache($cacheFile);
+
+    $summaries = [];
+    foreach ($rows as $row) {
+        if (!is_array($row) || $row === []) {
+            continue;
+        }
+
+        $summaries[] = normalizeInProgressSummary($row);
+    }
+
+    usort($summaries, static function (array $a, array $b): int {
+        return strcmp((string) ($b['dateSort'] ?? ''), (string) ($a['dateSort'] ?? ''));
+    });
+
+    return $summaries;
+}
+
+function loadInProgressRowsFromCache(string $cacheFile): array
+{
+    if ($cacheFile === '' || !is_file($cacheFile) || !is_readable($cacheFile)) {
+        return [];
+    }
+
+    $raw = file_get_contents($cacheFile);
+    if ($raw === false || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    if (isset($decoded['data']) && is_array($decoded['data'])) {
+        return $decoded['data'];
+    }
+
+    if (array_is_list($decoded)) {
+        return $decoded;
+    }
+
+    return [];
+}
+
+function findInProgressRowInCache(string $cacheFile, string $workflowReportId): array
+{
+    $workflowReportId = trim($workflowReportId);
+    if ($workflowReportId === '') {
+        return [];
+    }
+
+    foreach (loadInProgressRowsFromCache($cacheFile) as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $candidate = firstNotEmpty($row, ['WorkFlowReportID', 'WorkflowReportID', 'Workflow Report ID']);
+        if ($candidate !== null && trim($candidate) === $workflowReportId) {
+            return $row;
+        }
+    }
+
+    return [];
+}
+
+function normalizeInProgressSummary(array $row): array
+{
+    $sampleId = firstNotEmpty($row, ['LIMS Sample ID', 'Sample Bottle ID', 'LIMSSampleID', 'SampleBottleID', 'SampleBottleBarcodeID', 'Sample ID']) ?? '-';
+    if ($sampleId === '-' || $sampleId === '') {
+        $workflowReportId = firstNotEmpty($row, ['WorkFlowReportID', 'WorkflowReportID', 'Workflow Report ID']);
+        if ($workflowReportId !== null && $workflowReportId !== '') {
+            $sampleId = 'WF-' . $workflowReportId;
+        }
+    }
+    $dateRaw = firstNotEmpty($row, [
+        'Date Reported',
+        'Date Sampled',
+        'Date Received',
+        'DateReported',
+        'DateSampled',
+        'DateReceived',
+        'CreatedDate',
+    ]);
+    $dateParts = sampleDateParts($dateRaw);
+    if ($dateParts === null) {
+        $now = new DateTimeImmutable();
+        $dateParts = [
+            'groupKey' => $now->format('Y-m-d'),
+            'display' => $now->format('d-m-Y'),
+            'sort' => $now->format('YmdHis'),
+        ];
+    }
+
+    $comments = firstNotEmpty($row, ['Comments']) ?? '';
+    $unitId = firstNotEmpty($row, ['Unit ID', 'UnitID']) ?? '-';
+    $workId = firstNotEmpty($row, ['Work ID', 'WorkID']) ?? '-';
+    $accountName = firstNotEmpty($row, ['Account Name', 'AccountName', 'ClientName']) ?? '-';
+    $accountId = firstNotEmpty($row, ['Account ID', 'AccountID', 'ClientID', 'ClientId']) ?? '-';
+    $sampler = firstNotEmpty($row, ['Sampler', 'ReportAuthorUsername']) ?? '-';
+    $sampleStatus = firstNotEmpty($row, ['Sample Status', 'SampleStatus']) ?? '-';
+    $lifeCycleRaw = firstNotEmpty($row, ['LifeCycleStage', 'LifecycleStage']) ?? '';
+    $lifeCycle = normalizeLifeCycleStageLabel($lifeCycleRaw);
+    $progressLabel = $sampleStatus;
+    if ($lifeCycle !== '' && $lifeCycle !== '-') {
+        $progressLabel = $sampleStatus !== '-' ? ($sampleStatus . ' / ' . $lifeCycle) : $lifeCycle;
+    }
+
+    return [
+        'file' => '',
+        'recordIndex' => 0,
+        'path' => '',
+        'sampleId' => $sampleId,
+        'accountName' => $accountName,
+        'accountId' => $accountId,
+        'accountDisplay' => formatAccountDisplay($accountName, $accountId),
+        'sampler' => $sampler,
+        'assetId' => firstNotEmpty($row, ['Asset ID', 'AssetId']) ?? '-',
+        'unitId' => $unitId,
+        'componentNumber' => extractComponentNumber($unitId),
+        'workId' => $workId,
+        'workOrder' => formatWorkOrder($workId),
+        'assetName' => firstNotEmpty($row, ['Asset Name', 'AssetDescription']) ?? '-',
+        'assetClass' => firstNotEmpty($row, ['Asset Class', 'AssetClass']) ?? '-',
+        'sampleStatus' => $sampleStatus,
+        'reportStatus' => '-',
+        'progressStatus' => $progressLabel,
+        'workflowReportId' => firstNotEmpty($row, ['WorkFlowReportID', 'WorkflowReportID', 'Workflow Report ID']) ?? '',
+        'dateRegisteredRaw' => firstNotEmpty($row, ['DateRegistered']) ?? '-',
+        'daysSinceSampled' => (int) (firstNotEmpty($row, ['DaysSinceSampled']) ?? '0'),
+        'contaminationRating' => firstNotEmpty($row, ['Contamination Rating', 'SampleStatus']) ?? '-',
+        'actionRequired' => hasActionRequiredComment($comments),
+        'dateGroup' => $dateParts['groupKey'],
+        'dateDisplay' => $dateParts['display'],
+        'dateSort' => $dateParts['sort'],
+        'isInProgress' => true,
+        'raw' => $row,
+    ];
+}
+
+function normalizeLifeCycleStageLabel(string $value): string
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return '';
+    }
+
+    if (ctype_digit($trimmed)) {
+        $map = [
+            '0' => 'Registered',
+            '1' => 'In Testing',
+            '2' => 'Completed',
+        ];
+
+        return $map[$trimmed] ?? ('Stage ' . $trimmed);
+    }
+
+    return $trimmed;
+}

@@ -10,10 +10,8 @@ error_reporting(E_ALL);
  * Mobil REST API synchronizer.
  *
  * Features:
- * - Fetch completed reports incrementally since last run.
- * - First run performs yearly backfill.
- * - Store completed reports as immutable JSON files in /web/mobilreports.
- * - Cache in-progress samples for 1 hour.
+ * - Fetch non-completed reports via one all-accounts API call.
+ * - Replace in-progress cache file on each manual/automated fetch.
  * - HTTP endpoint with ?action=fetch.
  */
 final class MobilApiClient
@@ -68,7 +66,7 @@ final class MobilApiClient
         $this->cacheDir = (string) ($options['cacheDir'] ?? ($root . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'mobil'));
 
         $this->stateFile = $this->cacheDir . DIRECTORY_SEPARATOR . 'fetch_state.json';
-        $this->inProgressCacheFile = $this->cacheDir . DIRECTORY_SEPARATOR . 'in_progress_cache.json';
+        $this->inProgressCacheFile = (string) ($options['inProgressCacheFile'] ?? ($this->cacheDir . DIRECTORY_SEPARATOR . 'in-progress-reports.json'));
 
         $this->ensureDirectory($this->reportsDir);
         $this->ensureDirectory($this->cacheDir);
@@ -76,334 +74,22 @@ final class MobilApiClient
 
     public function fetchCompletedReportsIncremental(): array
     {
-        $state = $this->readState();
-        $lastFetchAt = $state['last_completed_fetch_at'] ?? null;
-        $isInitialBackfill = !is_string($lastFetchAt) || trim($lastFetchAt) === '';
-
-        if ($isInitialBackfill) {
-            return $this->fetchCompletedReportsInitialWeeklyStep($state);
-        }
-
-        $ranges = $this->buildFetchRanges($lastFetchAt);
         $summary = [
             'status' => 'ok',
             'environment' => $this->environment,
-            'mode' => 'incremental',
-            'ranges' => $ranges,
-            'sampledata_chunk_mode' => [],
-            'accounts_count' => 0,
-            'completed_seen' => 0,
-            'completed_saved' => 0,
-            'completed_skipped_missing_keys' => 0,
-            'completed_skipped_existing' => 0,
-            'completed_failed_detail' => 0,
+            'mode' => 'in-progress-only',
+            'source_endpoint' => '/sampleactivity/filter',
             'in_progress_count' => 0,
             'in_progress_cache_expires_at' => null,
             'started_at' => gmdate('c'),
             'finished_at' => null,
         ];
-
-        $accounts = $this->getMyAccounts();
-        $summary['accounts_count'] = count($accounts);
-
-        $samplesByNaturalKey = [];
-        foreach ($ranges as $range) {
-            $chunkResult = $this->getSampleDataAdaptive($accounts, $range['start'], $range['end']);
-            $rows = $chunkResult['rows'];
-            $summary['sampledata_chunk_mode'][] = [
-                'start' => $range['start'],
-                'end' => $range['end'],
-                'mode' => $chunkResult['mode'],
-                'chunks' => $chunkResult['chunks'],
-            ];
-
-            foreach ($rows as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-
-                if (!$this->isCompletedSample($row)) {
-                    continue;
-                }
-
-                $summary['completed_seen']++;
-
-                $accountId = $this->extractAccountId($row);
-                $limsSampleId = $this->extractLimsSampleId($row);
-
-                if ($accountId === '' || $limsSampleId === '') {
-                    $summary['completed_skipped_missing_keys']++;
-                    continue;
-                }
-
-                $naturalKey = strtolower($accountId . '|' . $limsSampleId);
-                if (!isset($samplesByNaturalKey[$naturalKey])) {
-                    $samplesByNaturalKey[$naturalKey] = [];
-                }
-                $samplesByNaturalKey[$naturalKey][] = $row;
-            }
-        }
-
-        foreach ($samplesByNaturalKey as $sampleRows) {
-            if (!is_array($sampleRows) || $sampleRows === [] || !isset($sampleRows[0]) || !is_array($sampleRows[0])) {
-                continue;
-            }
-
-            $sample = $sampleRows[0];
-            $accountId = $this->extractAccountId($sample);
-            $limsSampleId = $this->extractLimsSampleId($sample);
-            $filePath = $this->buildReportFilePath($accountId, $limsSampleId);
-
-            if (is_file($filePath)) {
-                $summary['completed_skipped_existing']++;
-                continue;
-            }
-
-            $saved = $this->storeCompletedReport($accountId, $limsSampleId, $sampleRows, json_encode($sampleRows, JSON_UNESCAPED_UNICODE));
-            if ($saved) {
-                $summary['completed_saved']++;
-            }
-        }
 
         $inProgress = $this->getInProgressSamples(true);
         $summary['in_progress_count'] = count($inProgress['data']);
         $summary['in_progress_cache_expires_at'] = $inProgress['expires_at'];
+        $summary['cache_file'] = $this->inProgressCacheFile;
 
-        $state['last_completed_fetch_at'] = gmdate('c');
-        $state['last_completed_fetch_unix'] = time();
-        $state['last_completed_saved_total'] = (int) ($state['last_completed_saved_total'] ?? 0) + (int) $summary['completed_saved'];
-        $this->writeState($state);
-
-        $summary['finished_at'] = gmdate('c');
-
-        return $summary;
-    }
-
-    private function fetchCompletedReportsInitialWeeklyStep(array $state): array
-    {
-        $today = new DateTimeImmutable(gmdate('Y-m-d'));
-
-        $cursorEndRaw = (string) ($state['initial_backfill_cursor_end'] ?? '');
-        $cursorEnd = DateTimeImmutable::createFromFormat('Y-m-d', $cursorEndRaw);
-        if (!$cursorEnd instanceof DateTimeImmutable) {
-            $cursorEnd = $today;
-        }
-
-        $chunkStart = $cursorEnd->modify('first day of this month');
-        $chunkEnd = $cursorEnd;
-
-        $accounts = $this->getMyAccounts();
-        $accountNames = $this->extractAccountCriteriaFromAccounts($accounts);
-        if (count($accountNames) === 0) {
-            $fallbackAccounts = $this->getAccounts('');
-            $accountNames = $this->extractAccountCriteriaFromAccounts($fallbackAccounts);
-        }
-
-        if (count($accountNames) === 0) {
-            throw new RuntimeException('No account names available for initial weekly backfill.');
-        }
-
-        $accountIndex = (int) ($state['initial_backfill_account_index'] ?? 0);
-        if ($accountIndex < 0) {
-            $accountIndex = 0;
-        }
-
-        $weekSeenTotal = (int) ($state['initial_backfill_week_seen_total'] ?? 0);
-        $emptyWeekStreak = (int) ($state['initial_backfill_empty_week_streak'] ?? 0);
-        $emptyWeeksToStop = isset($_GET['emptyMonthsToStop']) && ctype_digit((string) $_GET['emptyMonthsToStop'])
-            ? max(1, (int) $_GET['emptyMonthsToStop'])
-            : 8;
-
-        if ($accountIndex >= count($accountNames)) {
-            if ($weekSeenTotal === 0 && $emptyWeekStreak >= $emptyWeeksToStop) {
-                $state['last_completed_fetch_at'] = gmdate('c');
-                $state['last_completed_fetch_unix'] = time();
-                unset(
-                    $state['initial_backfill_cursor_end'],
-                    $state['initial_backfill_step_index'],
-                    $state['initial_backfill_account_index'],
-                    $state['initial_backfill_week_seen_total'],
-                    $state['initial_backfill_empty_week_streak']
-                );
-
-                $inProgress = $this->getInProgressSamples(true);
-                $summary = [
-                    'status' => 'ok',
-                    'environment' => $this->environment,
-                    'mode' => 'initial-weekly-step',
-                    'backfill_completed' => true,
-                    'current_chunk' => [
-                        'start' => $chunkStart->format('Y-m-d'),
-                        'end' => $chunkEnd->format('Y-m-d'),
-                    ],
-                    'in_progress_count' => count($inProgress['data']),
-                    'in_progress_cache_expires_at' => $inProgress['expires_at'],
-                    'next_fetch_url' => null,
-                    'empty_week_streak' => $emptyWeekStreak,
-                    'empty_weeks_to_stop' => $emptyWeeksToStop,
-                    'started_at' => gmdate('c'),
-                    'finished_at' => gmdate('c'),
-                ];
-
-                $this->writeState($state);
-                return $summary;
-            }
-
-            $weekSeenTotal = 0;
-            $accountIndex = 0;
-            $cursorEnd = $chunkStart->modify('-1 day');
-            $chunkStart = $cursorEnd->modify('first day of this month');
-            $chunkEnd = $cursorEnd;
-        }
-
-        $accountName = $accountNames[$accountIndex];
-
-        $summary = [
-            'status' => 'ok',
-            'environment' => $this->environment,
-            'mode' => 'initial-monthly-step',
-            'current_chunk' => [
-                'start' => $chunkStart->format('Y-m-d'),
-                'end' => $chunkEnd->format('Y-m-d'),
-            ],
-            'accounts_count' => count($accountNames),
-            'account_index' => $accountIndex,
-            'account_name' => $accountName,
-            'completed_seen' => 0,
-            'completed_saved' => 0,
-            'completed_skipped_missing_keys' => 0,
-            'completed_skipped_existing' => 0,
-            'completed_failed_detail' => 0,
-            'in_progress_count' => 0,
-            'in_progress_cache_expires_at' => null,
-            'backfill_cursor_end' => $cursorEnd->format('Y-m-d'),
-            'next_fetch_url' => '?action=fetch',
-            'started_at' => gmdate('c'),
-            'finished_at' => null,
-        ];
-
-        $rows = $this->getSampleDataForAccountBatch([$accountName], $chunkStart->format('Y-m-d'), $chunkEnd->format('Y-m-d'));
-        $summary['sampledata_chunk_mode'] = [
-            [
-                'start' => $chunkStart->format('Y-m-d'),
-                'end' => $chunkEnd->format('Y-m-d'),
-                'mode' => 'single-account-month',
-                'chunks' => 1,
-            ],
-        ];
-
-        $samplesByNaturalKey = [];
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
-            if (!$this->isCompletedSample($row)) {
-                continue;
-            }
-
-            $summary['completed_seen']++;
-
-            $accountId = $this->extractAccountId($row);
-            $limsSampleId = $this->extractLimsSampleId($row);
-
-            if ($accountId === '' || $limsSampleId === '') {
-                $summary['completed_skipped_missing_keys']++;
-                continue;
-            }
-
-            $naturalKey = strtolower($accountId . '|' . $limsSampleId);
-            if (!isset($samplesByNaturalKey[$naturalKey])) {
-                $samplesByNaturalKey[$naturalKey] = [];
-            }
-            $samplesByNaturalKey[$naturalKey][] = $row;
-        }
-
-        foreach ($samplesByNaturalKey as $sampleRows) {
-            if (!is_array($sampleRows) || $sampleRows === [] || !isset($sampleRows[0]) || !is_array($sampleRows[0])) {
-                continue;
-            }
-
-            $sample = $sampleRows[0];
-            $accountId = $this->extractAccountId($sample);
-            $limsSampleId = $this->extractLimsSampleId($sample);
-            $filePath = $this->buildReportFilePath($accountId, $limsSampleId);
-
-            if (is_file($filePath)) {
-                $summary['completed_skipped_existing']++;
-                continue;
-            }
-
-            $saved = $this->storeCompletedReport($accountId, $limsSampleId, $sampleRows, json_encode($sampleRows, JSON_UNESCAPED_UNICODE));
-            if ($saved) {
-                $summary['completed_saved']++;
-            }
-        }
-
-        $stepIndex = (int) ($state['initial_backfill_step_index'] ?? 0) + 1;
-        $state['initial_backfill_step_index'] = $stepIndex;
-        $summary['step_index'] = $stepIndex;
-
-        $state['last_completed_saved_total'] = (int) ($state['last_completed_saved_total'] ?? 0) + (int) $summary['completed_saved'];
-
-        $weekSeenTotal += (int) $summary['completed_seen'];
-        $state['initial_backfill_week_seen_total'] = $weekSeenTotal;
-
-        $nextAccountIndex = $accountIndex + 1;
-        if ($nextAccountIndex >= count($accountNames)) {
-            $summary['week_finished'] = true;
-            $summary['week_seen_total'] = $weekSeenTotal;
-
-            if ($weekSeenTotal === 0) {
-                $emptyWeekStreak++;
-            } else {
-                $emptyWeekStreak = 0;
-            }
-
-            if ($weekSeenTotal === 0 && $emptyWeekStreak >= $emptyWeeksToStop) {
-                $state['last_completed_fetch_at'] = gmdate('c');
-                $state['last_completed_fetch_unix'] = time();
-                unset(
-                    $state['initial_backfill_cursor_end'],
-                    $state['initial_backfill_step_index'],
-                    $state['initial_backfill_account_index'],
-                    $state['initial_backfill_week_seen_total'],
-                    $state['initial_backfill_empty_week_streak']
-                );
-
-                $inProgress = $this->getInProgressSamples(true);
-                $summary['in_progress_count'] = count($inProgress['data']);
-                $summary['in_progress_cache_expires_at'] = $inProgress['expires_at'];
-                $summary['backfill_completed'] = true;
-                $summary['next_fetch_url'] = null;
-                $summary['empty_week_streak'] = $emptyWeekStreak;
-                $summary['empty_weeks_to_stop'] = $emptyWeeksToStop;
-            } else {
-                $nextCursorEnd = $chunkStart->modify('-1 day');
-                $state['initial_backfill_cursor_end'] = $nextCursorEnd->format('Y-m-d');
-                $state['initial_backfill_account_index'] = 0;
-                $state['initial_backfill_week_seen_total'] = 0;
-                $state['initial_backfill_empty_week_streak'] = $emptyWeekStreak;
-                $summary['backfill_completed'] = false;
-                $summary['next_chunk_start'] = $nextCursorEnd->modify('first day of this month')->format('Y-m-d');
-                $summary['next_chunk_end'] = $nextCursorEnd->format('Y-m-d');
-                $summary['next_account_index'] = 0;
-                $summary['empty_week_streak'] = $emptyWeekStreak;
-                $summary['empty_weeks_to_stop'] = $emptyWeeksToStop;
-            }
-        } else {
-            $state['initial_backfill_cursor_end'] = $cursorEnd->format('Y-m-d');
-            $state['initial_backfill_account_index'] = $nextAccountIndex;
-            $summary['backfill_completed'] = false;
-            $summary['week_finished'] = false;
-            $summary['next_account_index'] = $nextAccountIndex;
-            $summary['next_account_name'] = $accountNames[$nextAccountIndex];
-            $summary['week_seen_total'] = $weekSeenTotal;
-            $summary['empty_week_streak'] = $emptyWeekStreak;
-            $summary['empty_weeks_to_stop'] = $emptyWeeksToStop;
-        }
-
-        $this->writeState($state);
         $summary['finished_at'] = gmdate('c');
 
         return $summary;
@@ -433,49 +119,10 @@ final class MobilApiClient
         }
 
         $allRows = [];
-        try {
-            $rows = $this->getSampleActivityAllResults();
-            foreach ($rows as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-
-                if ($this->isCompletedSample($row)) {
-                    continue;
-                }
-
+        $rows = $this->getSampleActivityAllResults();
+        foreach ($rows as $row) {
+            if (is_array($row)) {
                 $allRows[] = $row;
-            }
-        } catch (Throwable $e) {
-            // Fallback only when bulk endpoint is unavailable.
-            $accounts = $this->getMyAccounts();
-            foreach ($accounts as $account) {
-                $clientId = $this->extractFirstNonEmpty($account, [
-                    'ClientID',
-                    'ClientId',
-                    'clientId',
-                    'clientid',
-                    'Id',
-                    'ID',
-                    'id',
-                ]);
-
-                if ($clientId === '' || !$this->isGuid($clientId)) {
-                    continue;
-                }
-
-                $rows = $this->getSampleActivityByAccount($clientId);
-                foreach ($rows as $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-
-                    if ($this->isCompletedSample($row)) {
-                        continue;
-                    }
-
-                    $allRows[] = $row;
-                }
             }
         }
 
@@ -523,10 +170,10 @@ final class MobilApiClient
     {
         $payload = [
             'Page' => 1,
-            'PageSize' => 1000,
+            'PageSize' => 5000,
             'ClientIds' => [],
             'SampleStatuses' => [],
-            'LifeCycleStages' => [],
+            'LifeCycleStages' => ['in-testing', 'registered'],
             'ServiceLevels' => [],
             'AssetClassId' => '',
             'AssetTag' => '',
@@ -548,114 +195,48 @@ final class MobilApiClient
 
         $response = $this->request('POST', '/sampleactivity/filter', [], $payload);
 
+        return $this->extractRowsFromSampleActivityResponse($response);
+    }
+
+    private function extractRowsFromSampleActivityResponse(array $response): array
+    {
+        if (isset($response['samples']) && is_array($response['samples'])) {
+            return $response['samples'];
+        }
+
+        if (isset($response['Samples']) && is_array($response['Samples'])) {
+            return $response['Samples'];
+        }
+
         if (isset($response['value']) && is_array($response['value'])) {
             return $response['value'];
         }
 
         if (isset($response['Results']) && is_array($response['Results'])) {
-            return $response['Results'];
+            if (array_is_list($response['Results'])) {
+                return $response['Results'];
+            }
+
+            if (isset($response['Results']['Items']) && is_array($response['Results']['Items'])) {
+                return $response['Results']['Items'];
+            }
+
+            if (isset($response['Results']['Data']) && is_array($response['Results']['Data'])) {
+                return $response['Results']['Data'];
+            }
         }
 
         if (isset($response['Data']) && is_array($response['Data'])) {
-            return $response['Data'];
-        }
+            if (array_is_list($response['Data'])) {
+                return $response['Data'];
+            }
 
-        if (is_array($response)) {
-            if (array_is_list($response)) {
-                return $response;
+            if (isset($response['Data']['Items']) && is_array($response['Data']['Items'])) {
+                return $response['Data']['Items'];
             }
         }
 
-        return [];
-    }
-
-    private function getSampleDataAdaptive(array $accounts, string $startDate, string $endDate): array
-    {
-        $attempts = ['full', 'month', 'week'];
-        $lastError = null;
-
-        foreach ($attempts as $mode) {
-            try {
-                if ($mode === 'full') {
-                    return [
-                        'mode' => 'full',
-                        'chunks' => 1,
-                        'rows' => $this->getSampleData($accounts, $startDate, $endDate),
-                    ];
-                }
-
-                $chunkRanges = $this->buildChunkedRanges($startDate, $endDate, $mode);
-                $allRows = [];
-                foreach ($chunkRanges as $chunk) {
-                    $rows = $this->getSampleData($accounts, $chunk['start'], $chunk['end']);
-                    foreach ($rows as $row) {
-                        $allRows[] = $row;
-                    }
-                }
-
-                return [
-                    'mode' => $mode,
-                    'chunks' => count($chunkRanges),
-                    'rows' => $allRows,
-                ];
-            } catch (Throwable $e) {
-                $lastError = $e;
-            }
-        }
-
-        if ($lastError instanceof Throwable) {
-            throw $lastError;
-        }
-
-        throw new RuntimeException('Could not fetch sample data for range.');
-    }
-
-    private function buildChunkedRanges(string $startDate, string $endDate, string $mode): array
-    {
-        $start = date_create_immutable($startDate);
-        $end = date_create_immutable($endDate);
-
-        if (!$start instanceof DateTimeImmutable || !$end instanceof DateTimeImmutable) {
-            throw new RuntimeException('Invalid date range for chunking.');
-        }
-
-        if ($start > $end) {
-            return [];
-        }
-
-        $ranges = [];
-        $cursor = $start;
-        while ($cursor <= $end) {
-            if ($mode === 'month') {
-                $chunkEnd = $cursor->modify('last day of this month');
-            } else {
-                $chunkEnd = $cursor->modify('+6 days');
-            }
-
-            if ($chunkEnd > $end) {
-                $chunkEnd = $end;
-            }
-
-            $ranges[] = [
-                'start' => $cursor->format('Y-m-d'),
-                'end' => $chunkEnd->format('Y-m-d'),
-            ];
-
-            $cursor = $chunkEnd->modify('+1 day');
-        }
-
-        return $ranges;
-    }
-
-    public function getMyAccounts(): array
-    {
-        $response = $this->request('GET', '/account/getaccounts');
-
-        if (isset($response['value']) && is_array($response['value'])) {
-            return $response['value'];
-        }
-
-        if (is_array($response)) {
+        if (array_is_list($response)) {
             return $response;
         }
 
@@ -835,356 +416,6 @@ final class MobilApiClient
     public function getInProgressCacheFilePath(): string
     {
         return $this->inProgressCacheFile;
-    }
-
-    public function getAccounts(string $searchTerm = ''): array
-    {
-        $query = $searchTerm !== '' ? ['searchterm' => $searchTerm] : ['searchterm' => ''];
-        $response = $this->request('GET', '/account/getaccounts', $query);
-
-        if (isset($response['value']) && is_array($response['value'])) {
-            return $response['value'];
-        }
-
-        if (is_array($response)) {
-            return $response;
-        }
-
-        return [];
-    }
-
-    public function getSampleActivityByAccount(string $clientId): array
-    {
-        $response = $this->request('GET', '/sampleactivity/filter/accountid/' . rawurlencode($clientId));
-
-        if (isset($response['value']) && is_array($response['value'])) {
-            return $response['value'];
-        }
-
-        if (is_array($response)) {
-            return $response;
-        }
-
-        return [];
-    }
-
-    public function getSampleData(array $accounts, string $startDate, string $endDate): array
-    {
-        $accountFilters = $this->extractAccountCriteriaFromAccounts($accounts);
-
-        // Fallback: if assigned accounts payload had no names, fetch broad account list once.
-        if (count($accountFilters) === 0) {
-            $fallbackAccounts = $this->getAccounts('');
-            $accountFilters = $this->extractAccountCriteriaFromAccounts($fallbackAccounts);
-        }
-
-        if (count($accountFilters) === 0) {
-            throw new RuntimeException('No account names available for samplereport/getsampledata filter.');
-        }
-
-        $allRows = [];
-        $accountBatches = array_chunk($accountFilters, 25);
-        foreach ($accountBatches as $batch) {
-            $rows = $this->getSampleDataForAccountBatch($batch, $startDate, $endDate);
-            foreach ($rows as $row) {
-                $allRows[] = $row;
-            }
-        }
-
-        return $allRows;
-    }
-
-    private function getSampleDataForAccountBatch(array $accountsBatch, string $startDate, string $endDate): array
-    {
-        $payload = [
-            'StartUtcDateReported' => $startDate,
-            'EndUtcDateReported' => $endDate,
-            'SampleStatus' => ['Completed'],
-            'AssetClasses' => [],
-            'Accounts' => array_values($accountsBatch),
-            'Assets' => [],
-            'IncludeWorkFlowData' => true,
-            'IncludeComments' => true,
-            'IncludeChildren' => false,
-            'Lubricant' => '',
-        ];
-
-        try {
-            $response = $this->request('POST', '/samplereport/getsampledata', [], $payload);
-            return $this->extractRowsFromSampleDataResponse($response);
-        } catch (Throwable $e) {
-            if (count($accountsBatch) > 1 && $this->isEndpointTimeoutError($e)) {
-                $mid = (int) floor(count($accountsBatch) / 2);
-                $left = array_slice($accountsBatch, 0, $mid);
-                $right = array_slice($accountsBatch, $mid);
-
-                $rows = [];
-                if (count($left) > 0) {
-                    $rows = array_merge($rows, $this->getSampleDataForAccountBatch($left, $startDate, $endDate));
-                }
-                if (count($right) > 0) {
-                    $rows = array_merge($rows, $this->getSampleDataForAccountBatch($right, $startDate, $endDate));
-                }
-
-                return $rows;
-            }
-
-            throw $e;
-        }
-    }
-
-    private function extractRowsFromSampleDataResponse(array $response): array
-    {
-        if (isset($response['Columns']) && is_array($response['Columns']) && isset($response['Results']) && is_array($response['Results'])) {
-            return $this->mapColumnsResultsToRows($response['Columns'], $response['Results']);
-        }
-
-        if (isset($response['value']) && is_array($response['value'])) {
-            return $response['value'];
-        }
-
-        if (isset($response['Results']) && is_array($response['Results'])) {
-            return $response['Results'];
-        }
-
-        if (isset($response['Data']) && is_array($response['Data'])) {
-            return $response['Data'];
-        }
-
-        if (array_is_list($response)) {
-            return $response;
-        }
-
-        return [];
-    }
-
-    private function mapColumnsResultsToRows(array $columns, array $results): array
-    {
-        $rows = [];
-
-        foreach ($results as $resultRow) {
-            if (!is_array($resultRow)) {
-                continue;
-            }
-
-            if (!array_is_list($resultRow)) {
-                $rows[] = $resultRow;
-                continue;
-            }
-
-            $mapped = [];
-            foreach ($columns as $index => $columnName) {
-                if (!is_string($columnName) || trim($columnName) === '') {
-                    continue;
-                }
-
-                $mapped[$columnName] = $resultRow[$index] ?? null;
-            }
-
-            if ($mapped !== []) {
-                $rows[] = $mapped;
-            }
-        }
-
-        return $rows;
-    }
-
-    private function extractAccountCriteriaFromAccounts(array $accounts): array
-    {
-        $accountFilters = [];
-        $blocked = [
-            'all accounts',
-            'all assigned accounts',
-            'all_clients',
-            'my_clients',
-        ];
-
-        foreach ($accounts as $account) {
-            if (!is_array($account)) {
-                continue;
-            }
-
-            $name = $this->extractFirstNonEmpty($account, [
-                'Name',
-                'name',
-                'AccountName',
-                'Account Name',
-                'ClientName',
-                'Client Name',
-                'DisplayName',
-                'Label',
-            ]);
-
-            if ($name !== '') {
-                $normalized = strtolower(trim($name));
-                if (in_array($normalized, $blocked, true)) {
-                    continue;
-                }
-
-                $accountFilters[] = $name;
-            }
-        }
-
-        $accountFilters = array_values(array_unique($accountFilters));
-
-        return $accountFilters;
-    }
-
-    public function getCompletedSampleByWorkflowReportId(string $workflowReportId): array
-    {
-        $response = $this->request('GET', '/sample/workflowreportid/' . rawurlencode($workflowReportId));
-
-        if (is_array($response)) {
-            return $response;
-        }
-
-        return [];
-    }
-
-    public function getCompletedSampleByBottleId(string $bottleId): array
-    {
-        $response = $this->request('GET', '/sample/bottleid/' . rawurlencode($bottleId));
-
-        if (is_array($response)) {
-            return $response;
-        }
-
-        return [];
-    }
-
-    private function buildFetchRanges(?string $lastFetchAt): array
-    {
-        $ranges = [];
-
-        if ($lastFetchAt !== null && trim($lastFetchAt) !== '') {
-            $start = date_create_immutable($lastFetchAt);
-            if ($start instanceof DateTimeImmutable) {
-                $ranges[] = [
-                    'start' => $start->format('Y-m-d'),
-                    'end' => gmdate('Y-m-d'),
-                    'kind' => 'incremental',
-                ];
-
-                return $ranges;
-            }
-        }
-
-        $currentYear = (int) gmdate('Y');
-        $fromYear = (int) ($_GET['fromYear'] ?? 2018);
-        $fromYear = max(2000, min($fromYear, $currentYear));
-
-        $start = DateTimeImmutable::createFromFormat('Y-m-d', sprintf('%04d-01-01', $fromYear));
-        $today = new DateTimeImmutable(gmdate('Y-m-d'));
-
-        if ($start instanceof DateTimeImmutable) {
-            $cursor = $start;
-            while ($cursor <= $today) {
-                $monthEnd = $cursor->modify('last day of this month');
-                if ($monthEnd > $today) {
-                    $monthEnd = $today;
-                }
-
-                $ranges[] = [
-                    'start' => $cursor->format('Y-m-d'),
-                    'end' => $monthEnd->format('Y-m-d'),
-                    'kind' => 'initial-backfill-month',
-                ];
-
-                $cursor = $monthEnd->modify('+1 day');
-            }
-        }
-
-        return $ranges;
-    }
-
-    private function storeCompletedReport(string $accountId, string $limsSampleId, array $report, ?string $rawReportJson = null): bool
-    {
-        $filePath = $this->buildReportFilePath($accountId, $limsSampleId);
-        if (is_file($filePath)) {
-            return false;
-        }
-
-        $payload = $report;
-
-        // Keep compatibility with existing local files (array with first record).
-        if (!array_key_exists(0, $payload)) {
-            $payload = [$payload];
-        }
-
-        $json = null;
-        if (is_string($rawReportJson) && trim($rawReportJson) !== '') {
-            $rawCandidate = trim($rawReportJson);
-            json_decode($rawCandidate, true);
-            if (json_last_error() === JSON_ERROR_NONE) {
-                $json = $rawCandidate;
-            }
-        }
-
-        if ($json === null) {
-            $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
-            if ($json === false) {
-                throw new RuntimeException('Could not encode report JSON');
-            }
-        }
-
-        $tmp = $filePath . '.tmp';
-        file_put_contents($tmp, $json);
-        rename($tmp, $filePath);
-
-        return true;
-    }
-
-    private function buildReportFilePath(string $accountId, string $limsSampleId): string
-    {
-        $safeAccountId = $this->sanitizeFilePart($accountId);
-        $safeSampleId = $this->sanitizeFilePart($limsSampleId);
-        $timestamp = (string) ((int) floor(microtime(true) * 1000));
-
-        $fileName = $safeAccountId . '-' . $safeSampleId . '[' . $timestamp . '].json';
-
-        return $this->reportsDir . DIRECTORY_SEPARATOR . $fileName;
-    }
-
-    private function getLastResponseBodyRaw(): ?string
-    {
-        if (!isset($this->lastHttpExchange['response']) || !is_array($this->lastHttpExchange['response'])) {
-            return null;
-        }
-
-        $bodyRaw = $this->lastHttpExchange['response']['body_raw'] ?? null;
-        if (!is_string($bodyRaw)) {
-            return null;
-        }
-
-        $trimmed = trim($bodyRaw);
-        return $trimmed !== '' ? $trimmed : null;
-    }
-
-    private function sanitizeFilePart(string $value): string
-    {
-        $clean = preg_replace('/[^A-Za-z0-9._-]/', '_', trim($value));
-        if (!is_string($clean) || $clean === '') {
-            return 'unknown';
-        }
-
-        return $clean;
-    }
-
-    private function isCompletedSample(array $row): bool
-    {
-        $status = strtolower($this->extractFirstNonEmpty($row, [
-            'Sample Status',
-            'sampleStatus',
-            'Status',
-            'Report Status',
-            'reportStatus',
-        ]));
-
-        if ($status === '') {
-            return false;
-        }
-
-        return strpos($status, 'complete') !== false || strpos($status, 'closed') !== false || $status === 'reported';
     }
 
     private function extractAccountId(array $row): string
@@ -2294,6 +1525,9 @@ try {
     $reportsDir = isset($_GET['reportsdir'])
         ? trim((string) $_GET['reportsdir'])
         : (string) ($mobilConfig['reportsDir'] ?? ($GLOBALS['samplePath'] ?? (__DIR__ . DIRECTORY_SEPARATOR . 'mobilreports')));
+    $inProgressCacheFile = isset($_GET['inprogresscache'])
+        ? trim((string) $_GET['inprogresscache'])
+        : (string) ($mobilConfig['inProgressCacheFile'] ?? '');
 
     $client = new MobilApiClient([
         'environment' => $environment,
@@ -2302,6 +1536,7 @@ try {
         'username' => $username,
         'password' => $password,
         'reportsDir' => $reportsDir,
+        'inProgressCacheFile' => $inProgressCacheFile,
         'apiKey' => $apiKey,
         'authEmail' => $authEmail,
         'authUserId' => $authUserId,
@@ -2327,31 +1562,11 @@ try {
         return;
     }
 
-    if ($action === 'inprogress') {
-        $result = $client->getInProgressSamples(false);
-        mobil_send_json([
-            'status' => 'ok',
-            'cached' => $result['cached'],
-            'expires_at' => $result['expires_at'],
-            'count' => count($result['data']),
-            'data' => $result['data'],
-        ]);
-        return;
-    }
-
-    if ($action === 'authcheck') {
-        $result = $client->runPostmanAuthCheckExact();
-        mobil_send_json($result);
-        return;
-    }
-
     mobil_send_json([
         'status' => 'ok',
         'message' => 'Mobil API endpoint ready',
         'actions' => [
             'fetch' => '?action=fetch',
-            'inprogress' => '?action=inprogress',
-            'authcheck' => '?action=authcheck',
         ],
         'auth_environment_default' => $authEnv,
         'hint' => 'Override auth environment with ?authenv=acc or ?authenv=prd',

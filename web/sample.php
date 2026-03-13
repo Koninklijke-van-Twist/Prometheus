@@ -195,7 +195,72 @@ function elementDisplayName(string $fieldName): string
     return $fieldName;
 }
 
+function mapInProgressRowToDetailRow(array $row): array
+{
+    $mapped = $row;
+
+    $mapped['Account Name'] = (string) ($row['Account Name'] ?? $row['AccountName'] ?? '');
+    $mapped['Account ID'] = (string) ($row['Account ID'] ?? $row['AccountID'] ?? '');
+    $mapped['Asset ID'] = (string) ($row['AssetID'] ?? '');
+    $mapped['Asset Name'] = (string) ($row['AssetDescription'] ?? '');
+    $mapped['Asset Class'] = (string) ($row['AssetClassName'] ?? '');
+    $mapped['Unit ID'] = (string) ($row['UnitID'] ?? '');
+    $mapped['Work ID'] = (string) (($row['Work_Id'] ?? $row['WorkOrderID'] ?? ''));
+    $mapped['Sampler'] = (string) ($row['Sampler'] ?? '');
+    $mapped['LIMS Sample ID'] = (string) (($row['LIMSSampleID'] ?? $row['SampleBottleBarcodeID'] ?? ''));
+    $mapped['Sample Bottle ID'] = (string) ($row['SampleBottleBarcodeID'] ?? '');
+    $mapped['Sample Status'] = (string) ($row['SampleStatus'] ?? 'In progress');
+    $mapped['Report Status'] = '-';
+    $mapped['Date Sampled'] = (string) ($row['DateSampled'] ?? '');
+    $mapped['Date Reported'] = (string) ($row['DateReported'] ?? '');
+    $mapped['Date Received'] = (string) ($row['DateReceived'] ?? '');
+    $mapped['Date Registered'] = (string) ($row['DateRegistered'] ?? '');
+    $mapped['WorkFlow Report ID'] = (string) ($row['WorkFlowReportID'] ?? '');
+    $mapped['LifeCycle Stage'] = normalizeLifeCycleStageLabel((string) ($row['LifeCycleStage'] ?? ''));
+    $mapped['Days Since Sampled'] = (string) ($row['DaysSinceSampled'] ?? '');
+    $mapped['Comments'] = 'In progress sample. Resultaten zijn nog niet beschikbaar.';
+
+    return $mapped;
+}
+
+function buildSampleDetailUrl(array $item): string
+{
+    if (!empty($item['isInProgress'])) {
+        $workflowReportId = trim((string) ($item['workflowReportId'] ?? ''));
+        if ($workflowReportId === '') {
+            return '#';
+        }
+
+        return 'sample.php?inprogress=1&workflowreportid=' . rawurlencode($workflowReportId);
+    }
+
+    $file = trim((string) ($item['file'] ?? ''));
+    $recordIndex = (int) ($item['recordIndex'] ?? 0);
+    if ($file === '') {
+        return '#';
+    }
+
+    return 'sample.php?file=' . rawurlencode($file) . '&record=' . $recordIndex;
+}
+
+function timelineItemLabel(array $item): string
+{
+    $date = trim((string) ($item['dateDisplay'] ?? '-'));
+    $sampleId = trim((string) ($item['sampleId'] ?? '-'));
+    $status = trim((string) (($item['isInProgress'] ?? false)
+        ? ($item['progressStatus'] ?? $item['sampleStatus'] ?? 'In progress')
+        : ($item['reportStatus'] ?? $item['sampleStatus'] ?? '-')));
+
+    if ($status === '') {
+        $status = '-';
+    }
+
+    return $date . ' | ' . $sampleId . ' | ' . $status;
+}
+
 $samplePathResolved = getConfiguredSamplePath();
+$isInProgress = isset($_GET['inprogress']) && (string) $_GET['inprogress'] === '1';
+$workflowReportIdParam = isset($_GET['workflowreportid']) ? trim((string) $_GET['workflowreportid']) : '';
 $fileParam = isset($_GET['file']) ? basename((string) $_GET['file']) : '';
 $recordParam = isset($_GET['record']) ? (int) $_GET['record'] : 0;
 $recordParam = max(0, $recordParam);
@@ -215,6 +280,8 @@ $summaryAccountLine = '-';
 $summaryAssetClass = '-';
 $summaryComments = '-';
 $error = null;
+$hideResultsSections = false;
+$componentTimelineItems = [];
 
 $ui = [
     'bg' => uiColor('bg', '#f5f4ef'),
@@ -234,7 +301,39 @@ $ui = [
     'cardTopAccentDefault' => uiColor('cardTopAccentDefault', '#0099cc'),
 ];
 
-if ($fileParam === '') {
+if ($isInProgress) {
+    if ($workflowReportIdParam === '') {
+        $error = 'Geen in-progress sample geselecteerd.';
+    } else {
+        $inProgressRow = findInProgressRowInCache(getConfiguredInProgressCachePath(), $workflowReportIdParam);
+        if ($inProgressRow === []) {
+            $error = 'In-progress sample niet gevonden in cache.';
+        } else {
+            $row = mapInProgressRowToDetailRow($inProgressRow);
+            $summary = normalizeInProgressSummary($inProgressRow);
+            $summary['sampleId'] = (string) ($summary['sampleId'] ?? ('WF-' . $workflowReportIdParam));
+            $reportStatusLabel = (string) ($summary['progressStatus'] ?? 'In progress');
+            $progressMeta = reportStatusMeta($reportStatusLabel);
+            $reportStatusStyle = (string) ($progressMeta['style'] ?? $reportStatusStyle);
+            $summaryAccountLine = (string) ($summary['accountDisplay'] ?? '-');
+            $summaryAssetClass = (string) ($summary['assetClass'] ?? '-');
+            $summaryComments = 'Dit is een in-progress sample. Resultaten zijn nog niet beschikbaar.';
+            $fuelType = '-';
+            ksort($row);
+
+            foreach ($row as $key => $value) {
+                if (isBlankSampleValue($value)) {
+                    $blankFields[$key] = $value;
+                } else {
+                    $filledFields[$key] = $value;
+                }
+            }
+
+            $hideResultsSections = true;
+            $contaminationRating = '-';
+        }
+    }
+} elseif ($fileParam === '') {
     $error = 'Geen sample geselecteerd.';
 } elseif (!is_file($fullPath)) {
     $error = 'Samplebestand niet gevonden.';
@@ -340,6 +439,61 @@ if ($fileParam === '') {
 
             return strcmp((string) $a['key'], (string) $b['key']);
         });
+    }
+}
+
+if ($error === null && is_array($summary)) {
+    $currentComponent = trim((string) ($summary['componentNumber'] ?? ''));
+    if ($currentComponent !== '' && $currentComponent !== '-') {
+        $allTimelineItems = [];
+
+        foreach (loadSampleSummaries($samplePathResolved) as $completedItem) {
+            if (!is_array($completedItem)) {
+                continue;
+            }
+
+            if (trim((string) ($completedItem['componentNumber'] ?? '')) !== $currentComponent) {
+                continue;
+            }
+
+            $completedItem['isInProgress'] = false;
+            $allTimelineItems[] = $completedItem;
+        }
+
+        foreach (loadInProgressSummariesFromCache(getConfiguredInProgressCachePath()) as $inProgressItem) {
+            if (!is_array($inProgressItem)) {
+                continue;
+            }
+
+            if (trim((string) ($inProgressItem['componentNumber'] ?? '')) !== $currentComponent) {
+                continue;
+            }
+
+            $inProgressItem['isInProgress'] = true;
+            $allTimelineItems[] = $inProgressItem;
+        }
+
+        usort($allTimelineItems, static function (array $a, array $b): int {
+            return strcmp((string) ($a['dateSort'] ?? ''), (string) ($b['dateSort'] ?? ''));
+        });
+
+        foreach ($allTimelineItems as $item) {
+            $isCurrent = false;
+            if (!empty($item['isInProgress'])) {
+                $candidateWorkflowReportId = trim((string) ($item['workflowReportId'] ?? ''));
+                $isCurrent = $isInProgress && $candidateWorkflowReportId !== '' && $candidateWorkflowReportId === $workflowReportIdParam;
+            } else {
+                $candidateFile = trim((string) ($item['file'] ?? ''));
+                $candidateRecord = (int) ($item['recordIndex'] ?? 0);
+                $isCurrent = !$isInProgress && $candidateFile === $fileParam && $candidateRecord === $recordParam;
+            }
+
+            $componentTimelineItems[] = [
+                'isCurrent' => $isCurrent,
+                'url' => buildSampleDetailUrl($item),
+                'label' => timelineItemLabel($item),
+            ];
+        }
     }
 }
 ?>
@@ -685,6 +839,66 @@ if ($fileParam === '') {
             font-size: 12px;
         }
 
+        .timeline-wrap {
+            margin-top: 14px;
+            border-top: 1px solid
+                <?= htmlspecialchars($ui['tableLine'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            padding-top: 12px;
+        }
+
+        .timeline-title {
+            margin: 0 0 8px;
+            font-size: 13px;
+            color: var(--muted);
+            font-weight: 700;
+        }
+
+        .timeline-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .timeline-item,
+        .timeline-current {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            border: 1px solid
+                <?= htmlspecialchars($ui['subtleBorder'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            text-decoration: none;
+        }
+
+        .timeline-item {
+            background: #fff;
+            color: var(--brand);
+        }
+
+        .timeline-item:hover {
+            background:
+                <?= htmlspecialchars($ui['subtleCardBackground'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+        }
+
+        .timeline-current {
+            background:
+                <?= htmlspecialchars($ui['brand'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            color:
+                <?= htmlspecialchars($ui['buttonText'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            border-color:
+                <?= htmlspecialchars($ui['brand'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            cursor: default;
+        }
+
         @media (max-width: 700px) {
             th {
                 width: 40%;
@@ -740,6 +954,34 @@ if ($fileParam === '') {
                     <div class="kv"><b>Fuel Type</b><?= htmlspecialchars($fuelType, ENT_QUOTES, 'UTF-8') ?></div>
                 </div>
             </section>
+
+            <?php if ($isInProgress): ?>
+                <section class="card">
+                    <h2 style="margin:0;">Status van nog te behandelen sample</h2>
+                    <table>
+                        <tbody>
+                            <tr>
+                                <th>Workflow Report ID</th>
+                                <td><?= htmlspecialchars((string) ($row['WorkFlow Report ID'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th>LifeCycle Stage</th>
+                                <td><?= htmlspecialchars((string) ($row['LifeCycle Stage'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></td>
+                            </tr>
+                            <tr>
+                                <th>Date Registered</th>
+                                <td><?= htmlspecialchars((string) ($row['Date Registered'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></td>
+                            </tr>
+                            <tr>
+                                <th>Days Since Sampled</th>
+                                <td><?= htmlspecialchars((string) ($row['Days Since Sampled'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+            <?php endif; ?>
 
             <section class="card">
                 <h2 style="margin:0;">Samenvatting</h2>
@@ -804,46 +1046,69 @@ if ($fileParam === '') {
                         </div>
                     </div>
                 </div>
+
+                <div class="timeline-wrap">
+                    <h3 class="timeline-title">Rapportages op componentnummer (chronologisch)</h3>
+                    <?php if (count($componentTimelineItems) > 0): ?>
+                        <ul class="timeline-list">
+                            <?php foreach ($componentTimelineItems as $timelineItem): ?>
+                                <li>
+                                    <?php if (!empty($timelineItem['isCurrent'])): ?>
+                                        <span
+                                            class="timeline-current"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php else: ?>
+                                        <a class="timeline-item"
+                                            href="<?= htmlspecialchars((string) $timelineItem['url'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></a>
+                                    <?php endif; ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <div class="chart-empty subtle">Geen andere rapportages gevonden voor dit componentnummer.</div>
+                    <?php endif; ?>
+                </div>
             </section>
 
-            <section class="card">
-                <div class="card-headline">
-                    <h2 style="margin:0;">Stoffen (<?= count($substanceItems) ?>)</h2>
-                    <div class="rating-pill"
-                        style="<?= htmlspecialchars($contaminationRatingStyle, ENT_QUOTES, 'UTF-8') ?>">
-                        Contamination Rating: <?= htmlspecialchars($contaminationRating, ENT_QUOTES, 'UTF-8') ?>
+            <?php if (!$hideResultsSections): ?>
+                <section class="card">
+                    <div class="card-headline">
+                        <h2 style="margin:0;">Stoffen (<?= count($substanceItems) ?>)</h2>
+                        <div class="rating-pill"
+                            style="<?= htmlspecialchars($contaminationRatingStyle, ENT_QUOTES, 'UTF-8') ?>">
+                            Contamination Rating: <?= htmlspecialchars($contaminationRating, ENT_QUOTES, 'UTF-8') ?>
+                        </div>
                     </div>
-                </div>
-                <div class="sub-grid">
-                    <?php foreach ($substanceItems as $item): ?>
-                        <?php
-                        $barPercent = max(0.0, min(100.0, (float) $item['percent']));
-                        $barColor = substanceBarColor($barPercent);
-                        $elementStyle = elementStyleForField((string) $item['key']);
-                        $elementName = elementDisplayName((string) $item['key']);
-                        ?>
-                        <div class="sub-card"
-                            style="--el-accent: <?= htmlspecialchars($elementStyle['accent'], ENT_QUOTES, 'UTF-8') ?>; --el-bg: <?= htmlspecialchars($elementStyle['bg'], ENT_QUOTES, 'UTF-8') ?>; --el-text: <?= htmlspecialchars($elementStyle['text'], ENT_QUOTES, 'UTF-8') ?>;">
-                            <div class="sub-card-head">
-                                <div class="sub-name"><?= htmlspecialchars($elementName, ENT_QUOTES, 'UTF-8') ?></div>
-                                <span
-                                    class="sub-symbol"><?= htmlspecialchars($elementStyle['symbol'], ENT_QUOTES, 'UTF-8') ?></span>
-                            </div>
-                            <div class="sub-value">
-                                <?= htmlspecialchars(formatValueForView($item['value']), ENT_QUOTES, 'UTF-8') ?>
-                                <small>ppm</small>
-                            </div>
-                            <div class="sub-percent"><?= number_format($barPercent, 1, ',', '.') ?>% van totaal gemeten stoffen
-                            </div>
-                            <div class="bar">
-                                <div class="bar-fill"
-                                    style="width: <?= number_format($barPercent, 2, '.', '') ?>%; background: <?= htmlspecialchars($barColor, ENT_QUOTES, 'UTF-8') ?>;">
+                    <div class="sub-grid">
+                        <?php foreach ($substanceItems as $item): ?>
+                            <?php
+                            $barPercent = max(0.0, min(100.0, (float) $item['percent']));
+                            $barColor = substanceBarColor($barPercent);
+                            $elementStyle = elementStyleForField((string) $item['key']);
+                            $elementName = elementDisplayName((string) $item['key']);
+                            ?>
+                            <div class="sub-card"
+                                style="--el-accent: <?= htmlspecialchars($elementStyle['accent'], ENT_QUOTES, 'UTF-8') ?>; --el-bg: <?= htmlspecialchars($elementStyle['bg'], ENT_QUOTES, 'UTF-8') ?>; --el-text: <?= htmlspecialchars($elementStyle['text'], ENT_QUOTES, 'UTF-8') ?>;">
+                                <div class="sub-card-head">
+                                    <div class="sub-name"><?= htmlspecialchars($elementName, ENT_QUOTES, 'UTF-8') ?></div>
+                                    <span
+                                        class="sub-symbol"><?= htmlspecialchars($elementStyle['symbol'], ENT_QUOTES, 'UTF-8') ?></span>
+                                </div>
+                                <div class="sub-value">
+                                    <?= htmlspecialchars(formatValueForView($item['value']), ENT_QUOTES, 'UTF-8') ?>
+                                    <small>ppm</small>
+                                </div>
+                                <div class="sub-percent"><?= number_format($barPercent, 1, ',', '.') ?>% van totaal gemeten stoffen
+                                </div>
+                                <div class="bar">
+                                    <div class="bar-fill"
+                                        style="width: <?= number_format($barPercent, 2, '.', '') ?>%; background: <?= htmlspecialchars($barColor, ENT_QUOTES, 'UTF-8') ?>;">
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            </section>
+                        <?php endforeach; ?>
+                    </div>
+                </section>
+            <?php endif; ?>
 
             <section class="card">
                 <h2 style="margin:0;">Ingevulde velden (<?= count($filledFields) ?>)</h2>
@@ -1046,7 +1311,9 @@ if ($fileParam === '') {
                     setChartState(key, 'loading');
                 });
 
-                const dataUrl = 'sample_charts_data.php?file=' + encodeURIComponent(<?= json_encode($fileParam, JSON_UNESCAPED_UNICODE) ?>);
+                const dataUrl = <?= json_encode($isInProgress
+                    ? ('sample_charts_data.php?inprogress=1&workflowreportid=' . rawurlencode($workflowReportIdParam))
+                    : ('sample_charts_data.php?file=' . rawurlencode($fileParam) . '&record=' . (int) $recordParam), JSON_UNESCAPED_UNICODE) ?>;
 
                 fetch(dataUrl, { cache: 'no-store' })
                     .then(function (response)

@@ -164,6 +164,46 @@ function cardSearchPayload(array $item, array $reportStatus, string $headerDate)
     return strtolower(trim(implode(' ', $parts)));
 }
 
+function inProgressAccountLine(array $item): string
+{
+    $name = trim((string) ($item['accountName'] ?? ''));
+    $id = trim((string) ($item['accountId'] ?? ''));
+
+    if ($name !== '' && $id !== '') {
+        return $name . ' (' . $id . ')';
+    }
+
+    if ($name !== '') {
+        return $name;
+    }
+
+    if ($id !== '') {
+        return $id;
+    }
+
+    return '-';
+}
+
+function inProgressSinceLine(array $item): string
+{
+    $registered = trim((string) ($item['dateRegisteredRaw'] ?? ''));
+    if ($registered === '') {
+        $registered = trim((string) ($item['dateDisplay'] ?? '-'));
+    }
+
+    $days = (int) ($item['daysSinceSampled'] ?? 0);
+    if ($days <= 0) {
+        return $registered . ' - (onbekend sinds gesampled)';
+    }
+
+    $weeks = (int) floor($days / 7);
+    if ($weeks >= 1) {
+        return $registered . ' - (' . $days . ' dagen / ' . $weeks . ' weken geleden gesampled)';
+    }
+
+    return $registered . ' - (' . $days . ' dagen geleden gesampled)';
+}
+
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
 
@@ -223,6 +263,12 @@ usort($statusFilters, static function (array $a, array $b): int {
 });
 
 $groups = groupSummariesByDate($visibleSummaries);
+$currentYear = (int) date('Y');
+$inProgressSummaries = [];
+if ($selectedYear === $currentYear) {
+    $inProgressCacheFile = getConfiguredInProgressCachePath();
+    $inProgressSummaries = loadInProgressSummariesFromCache($inProgressCacheFile);
+}
 
 $currentUserEmail = '';
 if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
@@ -689,6 +735,63 @@ $ui = [
                 <code><?= htmlspecialchars($samplePathResolved, ENT_QUOTES, 'UTF-8') ?></code>.
             </div>
         <?php else: ?>
+            <?php if (count($inProgressSummaries) > 0): ?>
+                <section class="group js-group">
+                    <h2>In progress (<?= count($inProgressSummaries) ?>)</h2>
+                    <div class="grid">
+                        <?php foreach ($inProgressSummaries as $item): ?>
+                            <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
+                            <?php $progressMeta = reportStatusMeta((string) ($item['progressStatus'] ?? ($item['sampleStatus'] ?? 'In progress'))); ?>
+                            <?php $searchPayload = cardSearchPayload($item, $progressMeta, 'in progress'); ?>
+                            <?php $workflowReportId = trim((string) ($item['workflowReportId'] ?? '')); ?>
+                            <?php if ($workflowReportId === '') {
+                                continue;
+                            } ?>
+                            <?php
+                            $sampler = trim((string) ($item['sampler'] ?? '-'));
+                            if ($sampler === '') {
+                                $sampler = '-';
+                            }
+                            $samplerLower = strtolower($sampler);
+                            $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
+                            ?>
+                            <a class="card" href="sample.php?inprogress=1&workflowreportid=<?= urlencode($workflowReportId) ?>"
+                                data-status="<?= htmlspecialchars($progressMeta['key'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-in-progress="1" data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
+                                data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
+                                style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
+                                <div class="card-head">
+                                    <div class="sample-title">
+                                        <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                    </div>
+                                    <div class="chip-stack">
+                                        <?php if (!empty($item['actionRequired'])): ?>
+                                            <span class="chip chip-action">Action Required</span>
+                                        <?php endif; ?>
+                                        <span class="chip"
+                                            style="<?= htmlspecialchars($progressMeta['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($progressMeta['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    </div>
+                                </div>
+                                <div class="row">Account:
+                                    <?= htmlspecialchars(inProgressAccountLine($item), ENT_QUOTES, 'UTF-8') ?>
+                                </div>
+                                <div class="row">Componentnummer:
+                                    <?= htmlspecialchars($item['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
+                                </div>
+                                <?php if (trim((string) ($item['workOrder'] ?? '')) !== '' && trim((string) ($item['workOrder'] ?? '')) !== '-'): ?>
+                                    <div class="row">Werkorder:
+                                        <?= htmlspecialchars((string) $item['workOrder'], ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                <?php endif; ?>
+                                <div class="row"><?= htmlspecialchars(inProgressSinceLine($item), ENT_QUOTES, 'UTF-8') ?></div>
+                                <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
+                                    <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
+                                </span>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                </section>
+            <?php endif; ?>
             <?php foreach ($groups as $groupKey => $group): ?>
                 <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
                 <section class="group js-group">
@@ -776,8 +879,9 @@ $ui = [
                 cards.forEach(function (card)
                 {
                     const status = card.dataset.status || '__unknown__';
+                    const isInProgress = card.dataset.inProgress === '1';
                     const hasActionRequired = card.dataset.actionRequired === '1';
-                    const statusVisible = statusCheckboxes.length === 0 ? true : activeStatuses.has(status);
+                    const statusVisible = isInProgress || statusCheckboxes.length === 0 ? true : activeStatuses.has(status);
                     const actionVisible = !actionOnly || hasActionRequired;
                     const haystack = (card.dataset.search || '').toLowerCase();
                     const searchVisible = needle === '' || haystack.indexOf(needle) !== -1;
