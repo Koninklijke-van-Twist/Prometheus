@@ -234,6 +234,43 @@ function timelineItemLabel(array $item): string
     return $date . ' | ' . $sampleId . ' | ' . $status;
 }
 
+function deduplicateDetailFields(array $row): array
+{
+    $result = [];
+    $canonicalMap = [];
+
+    foreach ($row as $key => $value) {
+        $field = trim((string) $key);
+        if ($field === '') {
+            continue;
+        }
+
+        $canonical = preg_replace('/[^a-z0-9]/', '', strtolower($field));
+        if ($canonical === null || $canonical === '') {
+            $canonical = strtolower($field);
+        }
+
+        if (!isset($canonicalMap[$canonical])) {
+            $canonicalMap[$canonical] = $field;
+            $result[$field] = $value;
+            continue;
+        }
+
+        $existingField = $canonicalMap[$canonical];
+        $currentIsReadable = strpos($field, ' ') !== false;
+        $existingIsReadable = strpos($existingField, ' ') !== false;
+
+        // Prefer readable labels (with spaces), e.g. "Account Name" over "AccountName".
+        if ($currentIsReadable && !$existingIsReadable) {
+            unset($result[$existingField]);
+            $canonicalMap[$canonical] = $field;
+            $result[$field] = $value;
+        }
+    }
+
+    return $result;
+}
+
 /**
  * Page load
  */
@@ -332,6 +369,7 @@ if ($isInProgress) {
             $summaryComments = 'Dit is een in-progress sample. Resultaten zijn nog niet beschikbaar.';
             $fuelType = '-';
             ksort($row);
+            $row = deduplicateDetailFields($row);
 
             foreach ($row as $key => $value) {
                 if (isBlankSampleValue($value)) {
