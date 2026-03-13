@@ -1,5 +1,5 @@
 <?php
-declare(strict_types=1);
+
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -452,6 +452,13 @@ register_shutdown_function(function () {
 $dailyFetch = ensureDailyFetchExecuted();
 $dailyFetchWarning = '';
 $dailyFetchRetryUrl = (string) ($_SERVER['REQUEST_URI'] ?? 'index.php');
+$dailyFetchAttempt = (int) ($dailyFetch['attempt'] ?? 0);
+$dailyFetchHttpCode = (int) ($dailyFetch['httpCode'] ?? 0);
+$dailyFetchMessage = (string) ($dailyFetch['message'] ?? 'Onbekende fout bij fetch.');
+$dailyFetchRawResponse = trim((string) ($dailyFetch['responseBody'] ?? ''));
+if ($dailyFetchRawResponse === '') {
+    $dailyFetchRawResponse = '(geen response body beschikbaar)';
+}
 if (empty($dailyFetch['ok'])) {
     $dailyFetchWarning = 'onderhanden analyses nog niet binnengehaald';
 }
@@ -896,12 +903,94 @@ $ui = [
             padding: 10px 12px;
         }
 
+        .warn-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
         .warn-action {
             display: inline-block;
-            margin-left: 8px;
             color: inherit;
             font-weight: 700;
             text-decoration: underline;
+            background: transparent;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .fetch-modal {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.42);
+        }
+
+        .fetch-modal.is-open {
+            display: flex;
+        }
+
+        .fetch-modal-card {
+            width: min(980px, 100%);
+            max-height: min(86vh, 760px);
+            background: #fff;
+            border-radius: 12px;
+            border: 1px solid
+                <?= htmlspecialchars($ui['line'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .fetch-modal-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .fetch-modal-close {
+            border: 1px solid
+                <?= htmlspecialchars($ui['line'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            background: #fff;
+            border-radius: 8px;
+            padding: 6px 10px;
+            cursor: pointer;
+            color: var(--ink);
+        }
+
+        .fetch-meta {
+            font-size: 13px;
+            color: var(--muted);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 8px;
+        }
+
+        .fetch-raw {
+            margin: 0;
+            flex: 1;
+            overflow: auto;
+            border: 1px solid
+                <?= htmlspecialchars($ui['line'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            border-radius: 10px;
+            background: #f7f9fb;
+            padding: 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-word;
         }
 
         .hidden {
@@ -946,8 +1035,30 @@ $ui = [
 
         <?php if ($dailyFetchWarning !== ''): ?>
             <div class="warn">
-                <?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?>
-                <a class="warn-action" href="<?= htmlspecialchars($dailyFetchRetryUrl, ENT_QUOTES, 'UTF-8') ?>">[Opnieuw proberen]</a>
+                <div class="warn-line">
+                    <span><?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?></span>
+                    <a class="warn-action" href="<?= htmlspecialchars($dailyFetchRetryUrl, ENT_QUOTES, 'UTF-8') ?>">[Opnieuw
+                        proberen]</a>
+                    <button type="button" class="warn-action" id="openFetchResponseModal">[Ruwe respons]</button>
+                </div>
+            </div>
+            <div class="fetch-modal" id="fetchResponseModal" aria-hidden="true">
+                <div class="fetch-modal-card" role="dialog" aria-modal="true" aria-labelledby="fetchResponseTitle">
+                    <div class="fetch-modal-head">
+                        <h2 id="fetchResponseTitle" style="margin:0;font-size:18px;">Ruwe fetch respons</h2>
+                        <button type="button" class="fetch-modal-close" id="closeFetchResponseModal">Sluiten</button>
+                    </div>
+                    <div class="fetch-meta">
+                        <div>Poging:
+                            <strong><?= htmlspecialchars((string) $dailyFetchAttempt, ENT_QUOTES, 'UTF-8') ?></strong></div>
+                        <div>HTTP code:
+                            <strong><?= htmlspecialchars((string) $dailyFetchHttpCode, ENT_QUOTES, 'UTF-8') ?></strong>
+                        </div>
+                        <div>Foutmelding: <strong><?= htmlspecialchars($dailyFetchMessage, ENT_QUOTES, 'UTF-8') ?></strong>
+                        </div>
+                    </div>
+                    <pre class="fetch-raw"><?= htmlspecialchars($dailyFetchRawResponse, ENT_QUOTES, 'UTF-8') ?></pre>
+                </div>
             </div>
         <?php endif; ?>
 
@@ -1123,6 +1234,60 @@ $ui = [
             const searchInput = document.getElementById('overviewSearch');
             const cards = Array.from(document.querySelectorAll('.card[data-status]'));
             const groups = Array.from(document.querySelectorAll('.js-group'));
+            const openFetchResponseModalButton = document.getElementById('openFetchResponseModal');
+            const fetchResponseModal = document.getElementById('fetchResponseModal');
+            const closeFetchResponseModalButton = document.getElementById('closeFetchResponseModal');
+
+            const openFetchModal = function ()
+            {
+                if (!fetchResponseModal)
+                {
+                    return;
+                }
+
+                fetchResponseModal.classList.add('is-open');
+                fetchResponseModal.setAttribute('aria-hidden', 'false');
+            };
+
+            const closeFetchModal = function ()
+            {
+                if (!fetchResponseModal)
+                {
+                    return;
+                }
+
+                fetchResponseModal.classList.remove('is-open');
+                fetchResponseModal.setAttribute('aria-hidden', 'true');
+            };
+
+            if (openFetchResponseModalButton)
+            {
+                openFetchResponseModalButton.addEventListener('click', openFetchModal);
+            }
+
+            if (closeFetchResponseModalButton)
+            {
+                closeFetchResponseModalButton.addEventListener('click', closeFetchModal);
+            }
+
+            if (fetchResponseModal)
+            {
+                fetchResponseModal.addEventListener('click', function (event)
+                {
+                    if (event.target === fetchResponseModal)
+                    {
+                        closeFetchModal();
+                    }
+                });
+
+                document.addEventListener('keydown', function (event)
+                {
+                    if (event.key === 'Escape' && fetchResponseModal.classList.contains('is-open'))
+                    {
+                        closeFetchModal();
+                    }
+                });
+            }
 
             if (cards.length === 0)
             {
