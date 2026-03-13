@@ -14,6 +14,8 @@ require_once __DIR__ . '/graphhelper.php';
 header('Content-Type: application/json; charset=utf-8');
 
 $fileParam = isset($_GET['file']) ? basename((string) $_GET['file']) : '';
+$recordParam = isset($_GET['record']) ? (int) $_GET['record'] : 0;
+$recordParam = max(0, $recordParam);
 $samplePathResolved = getConfiguredSamplePath();
 
 if ($fileParam === '') {
@@ -35,7 +37,8 @@ if ($samplePathResolved === '' || !is_file($fullPath)) {
     exit;
 }
 
-$row = parseSampleJsonFile($fullPath);
+$rows = parseSampleJsonRecords($fullPath);
+$row = (isset($rows[$recordParam]) && is_array($rows[$recordParam])) ? $rows[$recordParam] : [];
 if ($row === []) {
     http_response_code(422);
     echo json_encode([

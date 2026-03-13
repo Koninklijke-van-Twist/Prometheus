@@ -321,7 +321,7 @@ $ui = [
         }
 
         .wrap {
-            max-width: 1120px;
+            max-width: 1300px;
             margin: 0 auto;
             padding: 20px 16px 40px;
         }
@@ -401,6 +401,7 @@ $ui = [
             flex-wrap: wrap;
             align-items: center;
             gap: 10px;
+            min-width: 900px;
         }
 
         .filters-head label {
@@ -425,7 +426,7 @@ $ui = [
             background: #fff;
             color: var(--ink);
             font: inherit;
-            min-width: min(360px, 100%);
+            min-width: min(860px, 100%);
         }
 
         .filter-list {
@@ -487,6 +488,8 @@ $ui = [
             border-top-color: var(--card-top-accent, var(--card-top-accent-default));
             border-radius: 12px;
             padding: 12px;
+            padding-bottom: 36px;
+            position: relative;
             transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
         }
 
@@ -529,6 +532,12 @@ $ui = [
             border-color: var(--brand);
             color: var(--brand);
             font-weight: 700;
+        }
+
+        .sampler-corner {
+            position: absolute;
+            right: 12px;
+            bottom: 10px;
         }
 
         .chip {
@@ -626,7 +635,7 @@ $ui = [
 
         <section class="hero">
             <h1>Overzicht op datum</h1>
-            <p>Bekijk beschikbare samples en klik door voor detailinformatie per sample.</p>
+            <p>Rapportages zijn gegroepeerd op de datum waarin ze van Mobil ontvangen zijn.</p>
         </section>
 
         <?php if (count($summaries) > 0): ?>
@@ -696,7 +705,8 @@ $ui = [
                             $samplerLower = strtolower($sampler);
                             $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
                             ?>
-                            <a class="card" href="sample.php?file=<?= urlencode($item['file']) ?>"
+                            <a class="card"
+                                href="sample.php?file=<?= urlencode($item['file']) ?>&record=<?= (int) ($item['recordIndex'] ?? 0) ?>"
                                 data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
                                 data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
@@ -704,9 +714,6 @@ $ui = [
                                 <div class="card-head">
                                     <div class="sample-title">
                                         <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
-                                        <span class="sampler-tag<?= $samplerMatchesUser ? ' match' : '' ?>">
-                                            <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
-                                        </span>
                                     </div>
                                     <div class="chip-stack">
                                         <?php if (!empty($item['actionRequired'])): ?>
@@ -728,6 +735,9 @@ $ui = [
                                 <div class="row">Contamination status:
                                     <?= htmlspecialchars($item['contaminationRating'], ENT_QUOTES, 'UTF-8') ?>
                                 </div>
+                                <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
+                                    <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
+                                </span>
                             </a>
                         <?php endforeach; ?>
                     </div>

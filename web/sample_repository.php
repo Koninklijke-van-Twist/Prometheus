@@ -36,6 +36,16 @@ function listSampleJsonFiles(string $samplePath): array
 
 function parseSampleJsonFile(string $filePath): array
 {
+    $records = parseSampleJsonRecords($filePath);
+    if ($records === []) {
+        return [];
+    }
+
+    return $records[0];
+}
+
+function parseSampleJsonRecords(string $filePath): array
+{
     if (!is_file($filePath) || !is_readable($filePath)) {
         return [];
     }
@@ -58,11 +68,53 @@ function parseSampleJsonFile(string $filePath): array
         }
     }
 
-    if (is_array($decoded) && isset($decoded[0]) && is_array($decoded[0])) {
-        return $decoded[0];
+    if (isset($decoded['Columns']) && is_array($decoded['Columns']) && isset($decoded['Results']) && is_array($decoded['Results'])) {
+        return sampleMapColumnsResultsToRows($decoded['Columns'], $decoded['Results']);
     }
 
-    return is_array($decoded) ? $decoded : [];
+    if (array_is_list($decoded)) {
+        $rows = [];
+        foreach ($decoded as $entry) {
+            if (is_array($entry)) {
+                $rows[] = $entry;
+            }
+        }
+
+        return $rows;
+    }
+
+    return is_array($decoded) ? [$decoded] : [];
+}
+
+function sampleMapColumnsResultsToRows(array $columns, array $results): array
+{
+    $rows = [];
+
+    foreach ($results as $resultRow) {
+        if (!is_array($resultRow)) {
+            continue;
+        }
+
+        if (!array_is_list($resultRow)) {
+            $rows[] = $resultRow;
+            continue;
+        }
+
+        $mapped = [];
+        foreach ($columns as $index => $columnName) {
+            if (!is_string($columnName) || trim($columnName) === '') {
+                continue;
+            }
+
+            $mapped[$columnName] = $resultRow[$index] ?? null;
+        }
+
+        if ($mapped !== []) {
+            $rows[] = $mapped;
+        }
+    }
+
+    return $rows;
 }
 
 function firstNotEmpty(array $row, array $keys): ?string
@@ -183,7 +235,7 @@ function formatAccountDisplay(?string $accountName, ?string $accountId): string
     return '-';
 }
 
-function normalizeSampleSummary(string $filePath, array $row): array
+function normalizeSampleSummary(string $filePath, array $row, int $recordIndex = 0): array
 {
     $sampleId = firstNotEmpty($row, ['LIMS Sample ID', 'Sample Bottle ID']) ?? pathinfo($filePath, PATHINFO_FILENAME);
     $dateRaw = firstNotEmpty($row, ['Date Sampled', 'Date Reported', 'Date Received']);
@@ -208,6 +260,7 @@ function normalizeSampleSummary(string $filePath, array $row): array
 
     return [
         'file' => basename($filePath),
+        'recordIndex' => $recordIndex,
         'path' => $filePath,
         'sampleId' => $sampleId,
         'accountName' => $accountName,
@@ -237,12 +290,14 @@ function loadSampleSummaries(string $samplePath): array
     $summaries = [];
 
     foreach (listSampleJsonFiles($samplePath) as $filePath) {
-        $row = parseSampleJsonFile($filePath);
-        if ($row === []) {
-            continue;
-        }
+        $rows = parseSampleJsonRecords($filePath);
+        foreach ($rows as $recordIndex => $row) {
+            if (!is_array($row) || $row === []) {
+                continue;
+            }
 
-        $summaries[] = normalizeSampleSummary($filePath, $row);
+            $summaries[] = normalizeSampleSummary($filePath, $row, (int) $recordIndex);
+        }
     }
 
     usort($summaries, static function (array $a, array $b): int {

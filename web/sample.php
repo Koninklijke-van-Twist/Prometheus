@@ -197,6 +197,8 @@ function elementDisplayName(string $fieldName): string
 
 $samplePathResolved = getConfiguredSamplePath();
 $fileParam = isset($_GET['file']) ? basename((string) $_GET['file']) : '';
+$recordParam = isset($_GET['record']) ? (int) $_GET['record'] : 0;
+$recordParam = max(0, $recordParam);
 $fullPath = $samplePathResolved !== '' ? $samplePathResolved . DIRECTORY_SEPARATOR . $fileParam : '';
 
 $summary = null;
@@ -237,11 +239,16 @@ if ($fileParam === '') {
 } elseif (!is_file($fullPath)) {
     $error = 'Samplebestand niet gevonden.';
 } else {
-    $row = parseSampleJsonFile($fullPath);
+    $rows = parseSampleJsonRecords($fullPath);
+    if (isset($rows[$recordParam]) && is_array($rows[$recordParam])) {
+        $row = $rows[$recordParam];
+    } else {
+        $row = [];
+    }
     if ($row === []) {
         $error = 'Samplebestand is leeg of ongeldig JSON.';
     } else {
-        $summary = normalizeSampleSummary($fullPath, $row);
+        $summary = normalizeSampleSummary($fullPath, $row, $recordParam);
         ksort($row);
         $contaminationRating = trim((string) ($row['Contamination Rating'] ?? ''));
         $ratingMeta = contaminationRatingMeta($contaminationRating);
@@ -385,7 +392,7 @@ if ($fileParam === '') {
         }
 
         .wrap {
-            max-width: 1120px;
+            max-width: 1300px;
             margin: 0 auto;
             padding: 20px 16px 40px;
         }

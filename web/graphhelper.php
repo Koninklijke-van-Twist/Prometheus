@@ -66,33 +66,35 @@ function graphLoadAssetHistoryRows(string $samplePath, string $assetId): array
     $historyRows = [];
 
     foreach (listSampleJsonFiles($samplePath) as $filePath) {
-        $row = parseSampleJsonFile($filePath);
-        if ($row === []) {
-            continue;
-        }
+        $rows = parseSampleJsonRecords($filePath);
+        foreach ($rows as $row) {
+            if (!is_array($row) || $row === []) {
+                continue;
+            }
 
-        $rowAssetId = trim((string) ($row['Asset ID'] ?? ''));
-        if ($rowAssetId !== $assetIdTrimmed) {
-            continue;
-        }
+            $rowAssetId = trim((string) ($row['Asset ID'] ?? ''));
+            if ($rowAssetId !== $assetIdTrimmed) {
+                continue;
+            }
 
-        $dateRaw = trim((string) ($row['Date Sampled'] ?? ''));
-        $dateParts = sampleDateParts($dateRaw);
+            $dateRaw = trim((string) ($row['Date Sampled'] ?? ''));
+            $dateParts = sampleDateParts($dateRaw);
 
-        if ($dateParts === null) {
-            $dt = (new DateTimeImmutable())->setTimestamp((int) filemtime($filePath));
-            $dateParts = [
-                'groupKey' => $dt->format('Y-m-d'),
-                'display' => $dt->format('d-m-Y'),
-                'sort' => $dt->format('YmdHis'),
+            if ($dateParts === null) {
+                $dt = (new DateTimeImmutable())->setTimestamp((int) filemtime($filePath));
+                $dateParts = [
+                    'groupKey' => $dt->format('Y-m-d'),
+                    'display' => $dt->format('d-m-Y'),
+                    'sort' => $dt->format('YmdHis'),
+                ];
+            }
+
+            $historyRows[] = [
+                'dateSort' => (string) ($dateParts['sort'] ?? ''),
+                'dateLabel' => (string) ($dateParts['display'] ?? ''),
+                'row' => $row,
             ];
         }
-
-        $historyRows[] = [
-            'dateSort' => (string) ($dateParts['sort'] ?? ''),
-            'dateLabel' => (string) ($dateParts['display'] ?? ''),
-            'row' => $row,
-        ];
     }
 
     usort($historyRows, static function (array $a, array $b): int {
