@@ -272,24 +272,49 @@ function executeFetchAction(string $url): array
         curl_close($ch);
 
         if ($responseBody === false) {
-            return ['ok' => false, 'message' => 'Fetch-call mislukt: ' . ($curlError !== '' ? $curlError : 'onbekende cURL-fout')];
+            return [
+                'ok' => false,
+                'message' => 'Fetch-call mislukt: ' . ($curlError !== '' ? $curlError : 'onbekende cURL-fout'),
+                'httpCode' => $httpCode,
+                'responseBody' => '',
+            ];
         }
 
         if ($httpCode >= 400) {
-            return ['ok' => false, 'message' => 'Fetch-call gaf HTTP ' . $httpCode . '.'];
+            return [
+                'ok' => false,
+                'message' => 'Fetch-call gaf HTTP ' . $httpCode . '.',
+                'httpCode' => $httpCode,
+                'responseBody' => (string) $responseBody,
+            ];
         }
 
         $decoded = json_decode((string) $responseBody, true);
         if (!is_array($decoded)) {
-            return ['ok' => false, 'message' => 'Fetch-call gaf geen geldige JSON terug.'];
+            return [
+                'ok' => false,
+                'message' => 'Fetch-call gaf geen geldige JSON terug.',
+                'httpCode' => $httpCode,
+                'responseBody' => (string) $responseBody,
+            ];
         }
 
         $status = strtolower(trim((string) ($decoded['status'] ?? '')));
         if ($status !== '' && $status !== 'ok') {
-            return ['ok' => false, 'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.')];
+            return [
+                'ok' => false,
+                'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.'),
+                'httpCode' => $httpCode,
+                'responseBody' => (string) $responseBody,
+            ];
         }
 
-        return ['ok' => true, 'message' => 'Dagelijkse fetch uitgevoerd.'];
+        return [
+            'ok' => true,
+            'message' => 'Dagelijkse fetch uitgevoerd.',
+            'httpCode' => $httpCode,
+            'responseBody' => (string) $responseBody,
+        ];
     }
 
     $context = stream_context_create([
@@ -301,20 +326,40 @@ function executeFetchAction(string $url): array
     ]);
     $responseBody = @file_get_contents($url, false, $context);
     if ($responseBody === false) {
-        return ['ok' => false, 'message' => 'Fetch-call mislukt (geen cURL en file_get_contents faalde).'];
+        return [
+            'ok' => false,
+            'message' => 'Fetch-call mislukt (geen cURL en file_get_contents faalde).',
+            'httpCode' => 0,
+            'responseBody' => '',
+        ];
     }
 
     $decoded = json_decode($responseBody, true);
     if (!is_array($decoded)) {
-        return ['ok' => false, 'message' => 'Fetch-call gaf geen geldige JSON terug.'];
+        return [
+            'ok' => false,
+            'message' => 'Fetch-call gaf geen geldige JSON terug.',
+            'httpCode' => 0,
+            'responseBody' => (string) $responseBody,
+        ];
     }
 
     $status = strtolower(trim((string) ($decoded['status'] ?? '')));
     if ($status !== '' && $status !== 'ok') {
-        return ['ok' => false, 'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.')];
+        return [
+            'ok' => false,
+            'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.'),
+            'httpCode' => 0,
+            'responseBody' => (string) $responseBody,
+        ];
     }
 
-    return ['ok' => true, 'message' => 'Dagelijkse fetch uitgevoerd.'];
+    return [
+        'ok' => true,
+        'message' => 'Dagelijkse fetch uitgevoerd.',
+        'httpCode' => 0,
+        'responseBody' => (string) $responseBody,
+    ];
 }
 
 function ensureDailyFetchExecuted(): array
@@ -334,45 +379,70 @@ function ensureDailyFetchExecuted(): array
             return ['attempted' => false, 'ok' => true, 'message' => 'Dagelijkse fetch was al succesvol uitgevoerd.'];
         }
 
-        @ignore_user_abort(true);
-        @set_time_limit(0);
+        $attempt = (int) ($state['last_attempt_number'] ?? 0) + 1;
+        $fetchResult = executeFetchAction(buildMobilFetchUrl());
 
-        $url = buildMobilFetchUrl();
-        $attempt = 0;
+        $newState = [
+            'last_attempt_date' => $today,
+            'last_attempt_at' => date('c'),
+            'last_attempt_ok' => !empty($fetchResult['ok']),
+            'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
+            'last_attempt_number' => $attempt,
+        ];
 
-        while (true) {
-            $attempt++;
-            $fetchResult = executeFetchAction($url);
-
-            $newState = [
-                'last_attempt_date' => $today,
-                'last_attempt_at' => date('c'),
-                'last_attempt_ok' => !empty($fetchResult['ok']),
-                'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
-                'last_attempt_number' => $attempt,
-            ];
-
-            if (!empty($fetchResult['ok'])) {
-                $newState['last_success_date'] = $today;
-                $newState['last_success_at'] = date('c');
-                writeJsonStateFile($statePath, $newState);
-
-                return [
-                    'attempted' => true,
-                    'ok' => true,
-                    'message' => 'Dagelijkse fetch geslaagd na ' . $attempt . ' poging(en).',
-                ];
-            }
-
-            writeJsonStateFile($statePath, $newState);
-            sleep(5);
+        if (!empty($fetchResult['ok'])) {
+            $newState['last_success_date'] = $today;
+            $newState['last_success_at'] = date('c');
         }
+
+        writeJsonStateFile($statePath, $newState);
+
+        return [
+            'attempted' => true,
+            'ok' => !empty($fetchResult['ok']),
+            'message' => (string) ($fetchResult['message'] ?? ''),
+            'attempt' => $attempt,
+            'httpCode' => (int) ($fetchResult['httpCode'] ?? 0),
+            'responseBody' => (string) ($fetchResult['responseBody'] ?? ''),
+        ];
     } finally {
         if ($lockHandle !== false) {
             @flock($lockHandle, LOCK_UN);
             fclose($lockHandle);
         }
     }
+}
+
+function renderDailyFetchRetryPage(array $dailyFetch): void
+{
+    $message = (string) ($dailyFetch['message'] ?? 'Onbekende fout bij dagelijkse fetch.');
+    $attempt = (int) ($dailyFetch['attempt'] ?? 0);
+    $httpCode = (int) ($dailyFetch['httpCode'] ?? 0);
+    $responseBody = trim((string) ($dailyFetch['responseBody'] ?? ''));
+    if ($responseBody === '') {
+        $responseBody = '(geen response body beschikbaar)';
+    }
+
+    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'index.php'), ENT_QUOTES, 'UTF-8');
+
+    http_response_code(503);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Retry-After: 1');
+
+    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+    echo '<meta http-equiv="refresh" content="1;url=' . $refreshUrl . '">';
+    echo '<title>Fetch retry</title>';
+    echo '<style>body{font-family:Verdana,Geneva,Tahoma,sans-serif;background:#f5f7fa;color:#13293d;margin:0;padding:20px}.card{max-width:980px;margin:0 auto;background:#fff;border:1px solid #d9e2ec;border-radius:12px;padding:16px}.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0}.label{font-size:12px;color:#486581}.value{font-size:14px;font-weight:700}.raw{margin-top:10px;border:1px solid #d9e2ec;border-radius:8px;background:#f8fafc;padding:10px}.raw pre{margin:0;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.35}</style>';
+    echo '</head><body><div class="card">';
+    echo '<h1 style="margin:0 0 8px 0;font-size:20px;">Dagelijkse fetch mislukt, retry volgt...</h1>';
+    echo '<p style="margin:0 0 8px 0;">De pagina herlaadt automatisch over 1 seconde voor een nieuwe poging.</p>';
+    echo '<div class="meta">';
+    echo '<div><div class="label">Poging</div><div class="value">' . htmlspecialchars((string) $attempt, ENT_QUOTES, 'UTF-8') . '</div></div>';
+    echo '<div><div class="label">HTTP code</div><div class="value">' . htmlspecialchars((string) $httpCode, ENT_QUOTES, 'UTF-8') . '</div></div>';
+    echo '<div><div class="label">Foutmelding</div><div class="value">' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</div></div>';
+    echo '</div>';
+    echo '<div class="raw"><div class="label" style="margin-bottom:6px;">Response</div><pre>' . htmlspecialchars($responseBody, ENT_QUOTES, 'UTF-8') . '</pre></div>';
+    echo '</div></body></html>';
 }
 
 /**
@@ -412,9 +482,12 @@ register_shutdown_function(function () {
 });
 
 $dailyFetch = ensureDailyFetchExecuted();
-$dailyFetchWarning = (!$dailyFetch['ok'])
-    ? ('Dagelijkse fetch is niet gelukt: ' . (string) ($dailyFetch['message'] ?? 'onbekende fout.'))
-    : '';
+if (empty($dailyFetch['ok'])) {
+    renderDailyFetchRetryPage($dailyFetch);
+    exit;
+}
+
+$dailyFetchWarning = '';
 
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
