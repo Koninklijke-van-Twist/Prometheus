@@ -5,6 +5,18 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+/**
+ * Includes/requires
+ */
+require_once __DIR__ . '/auth.php';
+require_once __DIR__ . "/logincheck.php";
+require_once __DIR__ . "/odata.php";
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/sample_repository.php';
+
+/**
+ * Variabelen
+ */
 $second = 1;
 $minute = $second * 60;
 $hour = $minute * 60;
@@ -12,44 +24,9 @@ $day = $hour * 24;
 
 $ttl = $hour;
 
-ob_start();
-register_shutdown_function(function () {
-    $error = error_get_last();
-    if (!$error || ($error['type'] ?? 0) !== E_ERROR) {
-        return;
-    }
-
-    $message = (string) ($error['message'] ?? '');
-    $isTimeout = stripos($message, 'Maximum execution time') !== false
-        && stripos($message, '120') !== false
-        && stripos($message, 'second') !== false;
-
-    if (!$isTimeout) {
-        return;
-    }
-
-    while (ob_get_level() > 0) {
-        ob_end_clean();
-    }
-
-    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'overzicht.php'), ENT_QUOTES, 'UTF-8');
-    http_response_code(503);
-    header('Content-Type: text/html; charset=utf-8');
-    header('Retry-After: 5');
-
-    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
-    echo '<meta http-equiv="refresh" content="5;url=' . $refreshUrl . '">';
-    echo '<title>Even geduld</title></head><body style="font-family:Verdana,Geneva,Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">';
-    echo '<div style="text-align:center;padding:24px">Er is meer tijd nodig om gegevens te laden.<br>De pagina wordt automatisch vernieuwd...</div>';
-    echo '<script>setTimeout(function(){location.reload();},5000);</script>';
-    echo '</body></html>';
-});
-
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . "/logincheck.php";
-require_once __DIR__ . "/odata.php";
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/sample_repository.php';
+/**
+ * Functies
+ */
 
 function uiColor(string $key, string $fallback): string
 {
@@ -257,6 +234,42 @@ function timelineItemLabel(array $item): string
 
     return $date . ' | ' . $sampleId . ' | ' . $status;
 }
+
+/**
+ * Page load
+ */
+ob_start();
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if (!$error || ($error['type'] ?? 0) !== E_ERROR) {
+        return;
+    }
+
+    $message = (string) ($error['message'] ?? '');
+    $isTimeout = stripos($message, 'Maximum execution time') !== false
+        && stripos($message, '120') !== false
+        && stripos($message, 'second') !== false;
+
+    if (!$isTimeout) {
+        return;
+    }
+
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'overzicht.php'), ENT_QUOTES, 'UTF-8');
+    http_response_code(503);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Retry-After: 5');
+
+    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+    echo '<meta http-equiv="refresh" content="5;url=' . $refreshUrl . '">';
+    echo '<title>Even geduld</title></head><body style="font-family:Verdana,Geneva,Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">';
+    echo '<div style="text-align:center;padding:24px">Er is meer tijd nodig om gegevens te laden.<br>De pagina wordt automatisch vernieuwd...</div>';
+    echo '<script>setTimeout(function(){location.reload();},5000);</script>';
+    echo '</body></html>';
+});
 
 $samplePathResolved = getConfiguredSamplePath();
 $isInProgress = isset($_GET['inprogress']) && (string) $_GET['inprogress'] === '1';
@@ -984,6 +997,40 @@ if ($error === null && is_array($summary)) {
             <?php endif; ?>
 
             <section class="card">
+                <h2 style="margin:0;">Component</h2>
+                <table>
+                    <tbody>
+                        <tr>
+                            <th>Componentnummer</th>
+                            <td><?= htmlspecialchars((string) ($summary['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="timeline-wrap">
+                    <h3 class="timeline-title">Gerelateerde rapporten (chronologisch)</h3>
+                    <?php if (count($componentTimelineItems) > 0): ?>
+                        <ul class="timeline-list">
+                            <?php foreach ($componentTimelineItems as $timelineItem): ?>
+                                <li>
+                                    <?php if (!empty($timelineItem['isCurrent'])): ?>
+                                        <span
+                                            class="timeline-current"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php else: ?>
+                                        <a class="timeline-item"
+                                            href="<?= htmlspecialchars((string) $timelineItem['url'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></a>
+                                    <?php endif; ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <div class="chart-empty subtle">Geen andere rapportages gevonden voor dit componentnummer.</div>
+                    <?php endif; ?>
+                </div>
+            </section>
+
+            <section class="card">
                 <h2 style="margin:0;">Samenvatting</h2>
                 <table>
                     <tbody>
@@ -1045,27 +1092,6 @@ if ($error === null && is_array($summary)) {
                             <div class="chart-empty is-hidden"></div>
                         </div>
                     </div>
-                </div>
-
-                <div class="timeline-wrap">
-                    <h3 class="timeline-title">Rapportages op componentnummer (chronologisch)</h3>
-                    <?php if (count($componentTimelineItems) > 0): ?>
-                        <ul class="timeline-list">
-                            <?php foreach ($componentTimelineItems as $timelineItem): ?>
-                                <li>
-                                    <?php if (!empty($timelineItem['isCurrent'])): ?>
-                                        <span
-                                            class="timeline-current"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></span>
-                                    <?php else: ?>
-                                        <a class="timeline-item"
-                                            href="<?= htmlspecialchars((string) $timelineItem['url'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) $timelineItem['label'], ENT_QUOTES, 'UTF-8') ?></a>
-                                    <?php endif; ?>
-                                </li>
-                            <?php endforeach; ?>
-                        </ul>
-                    <?php else: ?>
-                        <div class="chart-empty subtle">Geen andere rapportages gevonden voor dit componentnummer.</div>
-                    <?php endif; ?>
                 </div>
             </section>
 

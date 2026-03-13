@@ -5,12 +5,18 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+/**
+ * Includes/requires
+ */
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/sample_repository.php';
 require_once __DIR__ . '/graphhelper.php';
 
+/**
+ * Variabelen
+ */
 header('Content-Type: application/json; charset=utf-8');
 
 $isInProgress = isset($_GET['inprogress']) && (string) $_GET['inprogress'] === '1';
@@ -20,6 +26,10 @@ $recordParam = isset($_GET['record']) ? (int) $_GET['record'] : 0;
 $recordParam = max(0, $recordParam);
 $samplePathResolved = getConfiguredSamplePath();
 $row = [];
+
+/**
+ * Page load
+ */
 
 if ($isInProgress) {
     if ($workflowReportIdParam === '') {

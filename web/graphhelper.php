@@ -3,6 +3,10 @@
 declare(strict_types=1);
 
 /**
+ * Functies
+ */
+
+/**
  * Generic helpers to build time-series chart data from sample JSON files.
  */
 function graphNormalizeNumber($value): ?float

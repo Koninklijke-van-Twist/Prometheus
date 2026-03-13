@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Functies
+ */
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
 {
     $ttlSeconds = max(1, (int) $ttlSeconds);

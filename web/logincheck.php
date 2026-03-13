@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Functies
+ */
+
 function is_trusted_requester(): bool
 {
     $remote = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -13,6 +17,10 @@ function is_trusted_requester(): bool
     }
     return false;
 }
+
+/**
+ * Page load
+ */
 
 if (!is_trusted_requester()) {
     require __DIR__ . "/../login/lib.php";

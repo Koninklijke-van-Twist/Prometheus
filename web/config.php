@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+/**
+ * Variabelen
+ */
+
 // Centrale UI-configuratie voor makkelijk tunen van kleuren/drempels.
 $prometheusConfig = [
     'colorStyle' => [

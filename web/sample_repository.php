@@ -3,6 +3,10 @@
 declare(strict_types=1);
 
 /**
+ * Functies
+ */
+
+/**
  * Shared helpers to read and normalize oil sample JSON files.
  */
 function getConfiguredSamplePath(): string

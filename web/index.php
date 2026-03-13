@@ -4,6 +4,18 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+/**
+ * Includes/requires
+ */
+require_once __DIR__ . '/auth.php';
+require_once __DIR__ . "/logincheck.php";
+require_once __DIR__ . "/odata.php";
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/sample_repository.php';
+
+/**
+ * Variabelen
+ */
 $second = 1;
 $minute = $second * 60;
 $hour = $minute * 60;
@@ -11,44 +23,9 @@ $day = $hour * 24;
 
 $ttl = $hour;
 
-ob_start();
-register_shutdown_function(function () {
-    $error = error_get_last();
-    if (!$error || ($error['type'] ?? 0) !== E_ERROR) {
-        return;
-    }
-
-    $message = (string) ($error['message'] ?? '');
-    $isTimeout = stripos($message, 'Maximum execution time') !== false
-        && stripos($message, '120') !== false
-        && stripos($message, 'second') !== false;
-
-    if (!$isTimeout) {
-        return;
-    }
-
-    while (ob_get_level() > 0) {
-        ob_end_clean();
-    }
-
-    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'overzicht.php'), ENT_QUOTES, 'UTF-8');
-    http_response_code(503);
-    header('Content-Type: text/html; charset=utf-8');
-    header('Retry-After: 5');
-
-    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
-    echo '<meta http-equiv="refresh" content="5;url=' . $refreshUrl . '">';
-    echo '<title>Even geduld</title></head><body style="font-family:Verdana,Geneva,Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">';
-    echo '<div style="text-align:center;padding:24px">Er is meer tijd nodig om gegevens te laden.<br>De pagina wordt automatisch vernieuwd...</div>';
-    echo '<script>setTimeout(function(){location.reload();},5000);</script>';
-    echo '</body></html>';
-});
-
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . "/logincheck.php";
-require_once __DIR__ . "/odata.php";
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/sample_repository.php';
+/**
+ * Functies
+ */
 
 function uiColor(string $key, string $fallback): string
 {
@@ -203,6 +180,230 @@ function inProgressSinceLine(array $item): string
 
     return $registered . ' - (' . $days . ' dagen geleden gesampled)';
 }
+
+function getMobilCacheDirFromConfig(): string
+{
+    $config = $GLOBALS['mobilApiAuth'] ?? [];
+    if (!is_array($config)) {
+        $config = [];
+    }
+
+    $cacheDir = isset($config['cacheDir']) ? trim((string) $config['cacheDir']) : '';
+    if ($cacheDir !== '') {
+        return $cacheDir;
+    }
+
+    $inProgressCacheFile = isset($config['inProgressCacheFile']) ? trim((string) $config['inProgressCacheFile']) : '';
+    if ($inProgressCacheFile !== '') {
+        return dirname($inProgressCacheFile);
+    }
+
+    return __DIR__ . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'mobil';
+}
+
+
+function getDailyFetchStatePath(): string
+{
+    return rtrim(getMobilCacheDirFromConfig(), "\\/") . DIRECTORY_SEPARATOR . 'index_daily_fetch_state.json';
+}
+
+function readJsonStateFile(string $path): array
+{
+    if ($path === '' || !is_file($path) || !is_readable($path)) {
+        return [];
+    }
+
+    $raw = file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function writeJsonStateFile(string $path, array $payload): void
+{
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+
+    $tmp = $path . '.tmp';
+    $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        return;
+    }
+
+    file_put_contents($tmp, $json);
+    @rename($tmp, $path);
+}
+
+function buildMobilFetchUrl(): string
+{
+    $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/web/index.php');
+    $scriptDir = str_replace('\\', '/', dirname($scriptName));
+    $scriptDir = rtrim($scriptDir, '/');
+    if ($scriptDir === '' || $scriptDir === '.') {
+        $scriptDir = '/';
+    }
+
+    $scheme = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
+    $basePath = rtrim($scriptDir, '/');
+
+    return $scheme . '://' . $host . $basePath . '/mobilapi.php?action=fetch';
+}
+
+function executeFetchAction(string $url): array
+{
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['ok' => false, 'message' => 'Kon cURL niet initialiseren.'];
+        }
+
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 300);
+        $responseBody = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($responseBody === false) {
+            return ['ok' => false, 'message' => 'Fetch-call mislukt: ' . ($curlError !== '' ? $curlError : 'onbekende cURL-fout')];
+        }
+
+        if ($httpCode >= 400) {
+            return ['ok' => false, 'message' => 'Fetch-call gaf HTTP ' . $httpCode . '.'];
+        }
+
+        $decoded = json_decode((string) $responseBody, true);
+        if (!is_array($decoded)) {
+            return ['ok' => false, 'message' => 'Fetch-call gaf geen geldige JSON terug.'];
+        }
+
+        $status = strtolower(trim((string) ($decoded['status'] ?? '')));
+        if ($status !== '' && $status !== 'ok') {
+            return ['ok' => false, 'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.')];
+        }
+
+        return ['ok' => true, 'message' => 'Dagelijkse fetch uitgevoerd.'];
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'timeout' => 300,
+            'ignore_errors' => true,
+        ],
+    ]);
+    $responseBody = @file_get_contents($url, false, $context);
+    if ($responseBody === false) {
+        return ['ok' => false, 'message' => 'Fetch-call mislukt (geen cURL en file_get_contents faalde).'];
+    }
+
+    $decoded = json_decode($responseBody, true);
+    if (!is_array($decoded)) {
+        return ['ok' => false, 'message' => 'Fetch-call gaf geen geldige JSON terug.'];
+    }
+
+    $status = strtolower(trim((string) ($decoded['status'] ?? '')));
+    if ($status !== '' && $status !== 'ok') {
+        return ['ok' => false, 'message' => (string) ($decoded['message'] ?? 'Onbekende fout bij fetch.')];
+    }
+
+    return ['ok' => true, 'message' => 'Dagelijkse fetch uitgevoerd.'];
+}
+
+function ensureDailyFetchExecuted(): array
+{
+    $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+    $statePath = getDailyFetchStatePath();
+    $lockPath = $statePath . '.lock';
+
+    $lockHandle = @fopen($lockPath, 'c+');
+    if ($lockHandle !== false) {
+        @flock($lockHandle, LOCK_EX);
+    }
+
+    $state = readJsonStateFile($statePath);
+    if (($state['last_attempt_date'] ?? '') === $today) {
+        if ($lockHandle !== false) {
+            @flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
+        }
+
+        return ['attempted' => false, 'ok' => true, 'message' => 'Dagelijkse fetch was al uitgevoerd.'];
+    }
+
+    $fetchResult = executeFetchAction(buildMobilFetchUrl());
+    $newState = [
+        'last_attempt_date' => $today,
+        'last_attempt_at' => date('c'),
+        'last_attempt_ok' => !empty($fetchResult['ok']),
+        'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
+    ];
+    if (!empty($fetchResult['ok'])) {
+        $newState['last_success_date'] = $today;
+        $newState['last_success_at'] = date('c');
+    }
+
+    writeJsonStateFile($statePath, $newState);
+
+    if ($lockHandle !== false) {
+        @flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    }
+
+    return [
+        'attempted' => true,
+        'ok' => !empty($fetchResult['ok']),
+        'message' => (string) ($fetchResult['message'] ?? ''),
+    ];
+}
+
+/**
+ * Page load
+ */
+ob_start();
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if (!$error || ($error['type'] ?? 0) !== E_ERROR) {
+        return;
+    }
+
+    $message = (string) ($error['message'] ?? '');
+    $isTimeout = stripos($message, 'Maximum execution time') !== false
+        && stripos($message, '120') !== false
+        && stripos($message, 'second') !== false;
+
+    if (!$isTimeout) {
+        return;
+    }
+
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'overzicht.php'), ENT_QUOTES, 'UTF-8');
+    http_response_code(503);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Retry-After: 5');
+
+    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+    echo '<meta http-equiv="refresh" content="5;url=' . $refreshUrl . '">';
+    echo '<title>Even geduld</title></head><body style="font-family:Verdana,Geneva,Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">';
+    echo '<div style="text-align:center;padding:24px">Er is meer tijd nodig om gegevens te laden.<br>De pagina wordt automatisch vernieuwd...</div>';
+    echo '<script>setTimeout(function(){location.reload();},5000);</script>';
+    echo '</body></html>';
+});
+
+$dailyFetch = ensureDailyFetchExecuted();
+$dailyFetchWarning = (!$dailyFetch['ok'])
+    ? ('Dagelijkse fetch is niet gelukt: ' . (string) ($dailyFetch['message'] ?? 'onbekende fout.'))
+    : '';
 
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
@@ -683,6 +884,10 @@ $ui = [
             <h1>Overzicht op datum</h1>
             <p>Rapportages zijn gegroepeerd op de datum waarin ze van Mobil ontvangen zijn.</p>
         </section>
+
+        <?php if ($dailyFetchWarning !== ''): ?>
+            <div class="warn"><?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?></div>
+        <?php endif; ?>
 
         <?php if (count($summaries) > 0): ?>
             <section class="filters">
