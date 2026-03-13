@@ -20,7 +20,6 @@ final class MobilApiClient
     private string $authMode;
     private string $authEndpoint;
     private int $timeoutSeconds;
-    private string $reportsDir;
     private string $cacheDir;
     private string $stateFile;
     private string $inProgressCacheFile;
@@ -54,13 +53,11 @@ final class MobilApiClient
         $this->timeoutSeconds = max(10, (int) ($options['timeoutSeconds'] ?? 60));
 
         $root = __DIR__;
-        $this->reportsDir = (string) ($options['reportsDir'] ?? ($root . DIRECTORY_SEPARATOR . 'mobilreports'));
         $this->cacheDir = (string) ($options['cacheDir'] ?? ($root . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'mobil'));
 
         $this->stateFile = $this->cacheDir . DIRECTORY_SEPARATOR . 'fetch_state.json';
         $this->inProgressCacheFile = (string) ($options['inProgressCacheFile'] ?? ($this->cacheDir . DIRECTORY_SEPARATOR . 'in-progress-reports.json'));
 
-        $this->ensureDirectory($this->reportsDir);
         $this->ensureDirectory($this->cacheDir);
     }
 

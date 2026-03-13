@@ -57,7 +57,6 @@ function mobil_send_fetch_html(array $payload, bool $isError = false): void
         $rawResponseText = '[]';
     }
     $cacheFileInUse = (string) ($payload['cache_file_in_use'] ?? '');
-    $reportsDirInUse = (string) ($payload['reports_dir_in_use'] ?? '');
     $reqCount = (int) ($perf['request_count'] ?? 0);
     $totalMs = (float) ($perf['total_ms'] ?? 0.0);
     $avgMs = (float) ($perf['avg_ms'] ?? 0.0);
@@ -114,7 +113,6 @@ function mobil_send_fetch_html(array $payload, bool $isError = false): void
     echo '</div>';
     echo '<div class="storage">';
     echo '<ul><li><strong>Cache-bestanden:</strong> ' . htmlspecialchars($cacheFileInUse !== '' ? $cacheFileInUse : '-', ENT_QUOTES, 'UTF-8') . '</li></ul>';
-    echo '<ul><li><strong>Permanente bestanden:</strong> ' . htmlspecialchars($reportsDirInUse !== '' ? $reportsDirInUse : '-', ENT_QUOTES, 'UTF-8') . '</li></ul>';
     echo '</div>';
     echo '<div class="raw"><div class="label">Raw Response</div><pre>' . htmlspecialchars($rawResponseText, ENT_QUOTES, 'UTF-8') . '</pre></div>';
     if ($shouldRefresh) {
@@ -195,9 +193,6 @@ try {
     $authUserId = isset($_GET['userid'])
         ? trim((string) $_GET['userid'])
         : (string) ($mobilConfig['authUserId'] ?? '');
-    $reportsDir = isset($_GET['reportsdir'])
-        ? trim((string) $_GET['reportsdir'])
-        : (string) ($mobilConfig['reportsDir'] ?? ($GLOBALS['samplePath'] ?? (__DIR__ . DIRECTORY_SEPARATOR . 'mobilreports')));
     $inProgressCacheFile = isset($_GET['inprogresscache'])
         ? trim((string) $_GET['inprogresscache'])
         : (string) ($mobilConfig['inProgressCacheFile'] ?? '');
@@ -208,7 +203,6 @@ try {
         'authMode' => $authMode,
         'username' => $username,
         'password' => $password,
-        'reportsDir' => $reportsDir,
         'inProgressCacheFile' => $inProgressCacheFile,
         'apiKey' => $apiKey,
         'authEmail' => $authEmail,
@@ -225,7 +219,6 @@ try {
         $result = $client->fetchCompletedReportsIncremental();
         $result['performance_stats'] = $client->getPerformanceStats();
         $result['raw_response'] = $client->getRawResponses();
-        $result['reports_dir_in_use'] = $reportsDir;
         $result['cache_file_in_use'] = $client->getInProgressCacheFilePath();
         if ($isHtmlView) {
             mobil_send_fetch_html($result, false);
