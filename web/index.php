@@ -239,6 +239,31 @@ function writeJsonStateFile(string $path, array $payload): void
     @rename($tmp, $path);
 }
 
+function hasSuccessfulFetchTodayFromCache(): bool
+{
+    $cacheFile = getConfiguredInProgressCachePath();
+    if ($cacheFile === '' || !is_file($cacheFile) || !is_readable($cacheFile)) {
+        return false;
+    }
+
+    $raw = file_get_contents($cacheFile);
+    if ($raw === false || trim($raw) === '') {
+        return false;
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return false;
+    }
+
+    $cachedAtUnix = (int) ($decoded['cached_at_unix'] ?? 0);
+    if ($cachedAtUnix <= 0) {
+        return false;
+    }
+
+    return date('Y-m-d', $cachedAtUnix) === date('Y-m-d');
+}
+
 function buildMobilFetchUrl(): string
 {
     $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/web/index.php');
@@ -364,9 +389,9 @@ function executeFetchAction(string $url): array
 
 function ensureDailyFetchExecuted(): array
 {
-    $today = (new DateTimeImmutable('now'))->format('Y-m-d');
     $statePath = getDailyFetchStatePath();
     $lockPath = $statePath . '.lock';
+    $removeLockFile = false;
 
     $lockHandle = @fopen($lockPath, 'c+');
     if ($lockHandle !== false) {
@@ -374,26 +399,39 @@ function ensureDailyFetchExecuted(): array
     }
 
     try {
-        $state = readJsonStateFile($statePath);
-        if (($state['last_success_date'] ?? '') === $today) {
+        if (hasSuccessfulFetchTodayFromCache()) {
+            @unlink($statePath);
+            $removeLockFile = true;
             return ['attempted' => false, 'ok' => true, 'message' => 'Dagelijkse fetch was al succesvol uitgevoerd.'];
         }
+
+        $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+        $state = readJsonStateFile($statePath);
 
         $attempt = (int) ($state['last_attempt_number'] ?? 0) + 1;
         $fetchResult = executeFetchAction(buildMobilFetchUrl());
 
+        if (!empty($fetchResult['ok'])) {
+            @unlink($statePath);
+            $removeLockFile = true;
+
+            return [
+                'attempted' => true,
+                'ok' => true,
+                'message' => (string) ($fetchResult['message'] ?? ''),
+                'attempt' => $attempt,
+                'httpCode' => (int) ($fetchResult['httpCode'] ?? 0),
+                'responseBody' => (string) ($fetchResult['responseBody'] ?? ''),
+            ];
+        }
+
         $newState = [
             'last_attempt_date' => $today,
             'last_attempt_at' => date('c'),
-            'last_attempt_ok' => !empty($fetchResult['ok']),
+            'last_attempt_ok' => false,
             'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
             'last_attempt_number' => $attempt,
         ];
-
-        if (!empty($fetchResult['ok'])) {
-            $newState['last_success_date'] = $today;
-            $newState['last_success_at'] = date('c');
-        }
 
         writeJsonStateFile($statePath, $newState);
 
@@ -409,6 +447,10 @@ function ensureDailyFetchExecuted(): array
         if ($lockHandle !== false) {
             @flock($lockHandle, LOCK_UN);
             fclose($lockHandle);
+        }
+
+        if ($removeLockFile) {
+            @unlink($lockPath);
         }
     }
 }
