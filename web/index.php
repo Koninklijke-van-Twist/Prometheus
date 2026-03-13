@@ -175,7 +175,7 @@ function inProgressSinceLine(array $item): string
 
     $weeks = (int) floor($days / 7);
     if ($weeks >= 1) {
-        return $registered . ' - (' . $days . ' dagen / ' . $weeks . ' weken geleden gesampled)';
+        return $registered . ' - (' . $weeks . ' ' . ($weeks === 1 ? "week" : "weken") . ' geleden gesampled)';
     }
 
     return $registered . ' - (' . $days . ' dagen geleden gesampled)';
@@ -1050,7 +1050,8 @@ $ui = [
                     </div>
                     <div class="fetch-meta">
                         <div>Poging:
-                            <strong><?= htmlspecialchars((string) $dailyFetchAttempt, ENT_QUOTES, 'UTF-8') ?></strong></div>
+                            <strong><?= htmlspecialchars((string) $dailyFetchAttempt, ENT_QUOTES, 'UTF-8') ?></strong>
+                        </div>
                         <div>HTTP code:
                             <strong><?= htmlspecialchars((string) $dailyFetchHttpCode, ENT_QUOTES, 'UTF-8') ?></strong>
                         </div>
