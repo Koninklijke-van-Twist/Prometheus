@@ -413,38 +413,6 @@ function ensureDailyFetchExecuted(): array
     }
 }
 
-function renderDailyFetchRetryPage(array $dailyFetch): void
-{
-    $message = (string) ($dailyFetch['message'] ?? 'Onbekende fout bij dagelijkse fetch.');
-    $attempt = (int) ($dailyFetch['attempt'] ?? 0);
-    $httpCode = (int) ($dailyFetch['httpCode'] ?? 0);
-    $responseBody = trim((string) ($dailyFetch['responseBody'] ?? ''));
-    if ($responseBody === '') {
-        $responseBody = '(geen response body beschikbaar)';
-    }
-
-    $refreshUrl = htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? 'index.php'), ENT_QUOTES, 'UTF-8');
-
-    http_response_code(503);
-    header('Content-Type: text/html; charset=utf-8');
-    header('Retry-After: 1');
-
-    echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
-    echo '<meta http-equiv="refresh" content="1;url=' . $refreshUrl . '">';
-    echo '<title>Fetch retry</title>';
-    echo '<style>body{font-family:Verdana,Geneva,Tahoma,sans-serif;background:#f5f7fa;color:#13293d;margin:0;padding:20px}.card{max-width:980px;margin:0 auto;background:#fff;border:1px solid #d9e2ec;border-radius:12px;padding:16px}.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0}.label{font-size:12px;color:#486581}.value{font-size:14px;font-weight:700}.raw{margin-top:10px;border:1px solid #d9e2ec;border-radius:8px;background:#f8fafc;padding:10px}.raw pre{margin:0;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.35}</style>';
-    echo '</head><body><div class="card">';
-    echo '<h1 style="margin:0 0 8px 0;font-size:20px;">Dagelijkse fetch mislukt, retry volgt...</h1>';
-    echo '<p style="margin:0 0 8px 0;">De pagina herlaadt automatisch over 1 seconde voor een nieuwe poging.</p>';
-    echo '<div class="meta">';
-    echo '<div><div class="label">Poging</div><div class="value">' . htmlspecialchars((string) $attempt, ENT_QUOTES, 'UTF-8') . '</div></div>';
-    echo '<div><div class="label">HTTP code</div><div class="value">' . htmlspecialchars((string) $httpCode, ENT_QUOTES, 'UTF-8') . '</div></div>';
-    echo '<div><div class="label">Foutmelding</div><div class="value">' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</div></div>';
-    echo '</div>';
-    echo '<div class="raw"><div class="label" style="margin-bottom:6px;">Response</div><pre>' . htmlspecialchars($responseBody, ENT_QUOTES, 'UTF-8') . '</pre></div>';
-    echo '</div></body></html>';
-}
-
 /**
  * Page load
  */
@@ -482,12 +450,11 @@ register_shutdown_function(function () {
 });
 
 $dailyFetch = ensureDailyFetchExecuted();
-if (empty($dailyFetch['ok'])) {
-    renderDailyFetchRetryPage($dailyFetch);
-    exit;
-}
-
 $dailyFetchWarning = '';
+$dailyFetchRetryUrl = (string) ($_SERVER['REQUEST_URI'] ?? 'index.php');
+if (empty($dailyFetch['ok'])) {
+    $dailyFetchWarning = 'onderhanden analyses nog niet binnengehaald';
+}
 
 $samplePathResolved = getConfiguredSamplePath();
 $summaries = loadSampleSummaries($samplePathResolved);
@@ -929,6 +896,14 @@ $ui = [
             padding: 10px 12px;
         }
 
+        .warn-action {
+            display: inline-block;
+            margin-left: 8px;
+            color: inherit;
+            font-weight: 700;
+            text-decoration: underline;
+        }
+
         .hidden {
             display: none !important;
         }
@@ -970,7 +945,10 @@ $ui = [
         </section>
 
         <?php if ($dailyFetchWarning !== ''): ?>
-            <div class="warn"><?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?></div>
+            <div class="warn">
+                <?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?>
+                <a class="warn-action" href="<?= htmlspecialchars($dailyFetchRetryUrl, ENT_QUOTES, 'UTF-8') ?>">[Opnieuw proberen]</a>
+            </div>
         <?php endif; ?>
 
         <?php if (count($summaries) > 0): ?>
