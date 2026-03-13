@@ -328,40 +328,51 @@ function ensureDailyFetchExecuted(): array
         @flock($lockHandle, LOCK_EX);
     }
 
-    $state = readJsonStateFile($statePath);
-    if (($state['last_attempt_date'] ?? '') === $today) {
+    try {
+        $state = readJsonStateFile($statePath);
+        if (($state['last_success_date'] ?? '') === $today) {
+            return ['attempted' => false, 'ok' => true, 'message' => 'Dagelijkse fetch was al succesvol uitgevoerd.'];
+        }
+
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+
+        $url = buildMobilFetchUrl();
+        $attempt = 0;
+
+        while (true) {
+            $attempt++;
+            $fetchResult = executeFetchAction($url);
+
+            $newState = [
+                'last_attempt_date' => $today,
+                'last_attempt_at' => date('c'),
+                'last_attempt_ok' => !empty($fetchResult['ok']),
+                'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
+                'last_attempt_number' => $attempt,
+            ];
+
+            if (!empty($fetchResult['ok'])) {
+                $newState['last_success_date'] = $today;
+                $newState['last_success_at'] = date('c');
+                writeJsonStateFile($statePath, $newState);
+
+                return [
+                    'attempted' => true,
+                    'ok' => true,
+                    'message' => 'Dagelijkse fetch geslaagd na ' . $attempt . ' poging(en).',
+                ];
+            }
+
+            writeJsonStateFile($statePath, $newState);
+            sleep(5);
+        }
+    } finally {
         if ($lockHandle !== false) {
             @flock($lockHandle, LOCK_UN);
             fclose($lockHandle);
         }
-
-        return ['attempted' => false, 'ok' => true, 'message' => 'Dagelijkse fetch was al uitgevoerd.'];
     }
-
-    $fetchResult = executeFetchAction(buildMobilFetchUrl());
-    $newState = [
-        'last_attempt_date' => $today,
-        'last_attempt_at' => date('c'),
-        'last_attempt_ok' => !empty($fetchResult['ok']),
-        'last_attempt_message' => (string) ($fetchResult['message'] ?? ''),
-    ];
-    if (!empty($fetchResult['ok'])) {
-        $newState['last_success_date'] = $today;
-        $newState['last_success_at'] = date('c');
-    }
-
-    writeJsonStateFile($statePath, $newState);
-
-    if ($lockHandle !== false) {
-        @flock($lockHandle, LOCK_UN);
-        fclose($lockHandle);
-    }
-
-    return [
-        'attempted' => true,
-        'ok' => !empty($fetchResult['ok']),
-        'message' => (string) ($fetchResult['message'] ?? ''),
-    ];
 }
 
 /**
