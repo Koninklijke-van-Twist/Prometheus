@@ -1152,7 +1152,8 @@ $ui = [
         <?php else: ?>
             <?php if (count($inProgressSummaries) > 0): ?>
                 <section class="group js-group">
-                    <h2 class="js-group-title" data-base-label="In progress">In progress (<span class="js-group-count"><?= count($inProgressSummaries) ?></span>)</h2>
+                    <h2 class="js-group-title" data-base-label="In progress">In progress (<span
+                            class="js-group-count"><?= count($inProgressSummaries) ?></span>)</h2>
                     <div class="grid">
                         <?php foreach ($inProgressSummaries as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
@@ -1221,7 +1222,9 @@ $ui = [
             <?php foreach ($groups as $groupKey => $group): ?>
                 <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
                 <section class="group js-group">
-                    <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span class="js-group-count"><?= count($group['items']) ?></span>)</h2>
+                    <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>">
+                        <?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span
+                            class="js-group-count"><?= count($group['items']) ?></span>)</h2>
                     <div class="grid">
                         <?php foreach ($group['items'] as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
