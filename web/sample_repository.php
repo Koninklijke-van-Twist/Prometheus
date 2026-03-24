@@ -155,6 +155,56 @@ function sampleDateParts(?string $input): ?array
     ];
 }
 
+function sampleDateMeta(?string $input): array
+{
+    $value = trim((string) $input);
+    if ($value === '' || $value === '-') {
+        return [
+            'display' => '-',
+            'daysSince' => null,
+        ];
+    }
+
+    try {
+        $dt = new DateTimeImmutable($value);
+    } catch (Exception $e) {
+        return [
+            'display' => $value,
+            'daysSince' => null,
+        ];
+    }
+
+    $dateOnly = $dt->setTime(0, 0, 0);
+    $todayMidnight = new DateTimeImmutable('today');
+    $secondsDiff = $todayMidnight->getTimestamp() - $dateOnly->getTimestamp();
+    $daysSince = (int) floor($secondsDiff / 86400);
+
+    return [
+        'display' => $dateOnly->format('d-m-Y'),
+        'daysSince' => $daysSince >= 0 ? $daysSince : null,
+    ];
+}
+
+function determineInProgressDateStageLabel(array $row): string
+{
+    $stages = [
+        'Sampled' => ['Date Sampled', 'DateSampled'],
+        'Reported' => ['Date Reported', 'DateReported'],
+        'Registered' => ['Date Registered', 'DateRegistered'],
+        'Received' => ['Date Received', 'DateReceived'],
+    ];
+
+    $label = '';
+    foreach ($stages as $stageLabel => $keys) {
+        $value = firstNotEmpty($row, $keys);
+        if ($value !== null && trim($value) !== '' && trim($value) !== '-') {
+            $label = $stageLabel;
+        }
+    }
+
+    return $label;
+}
+
 function hasActionRequiredComment(?string $comment): bool
 {
     if ($comment === null || trim($comment) === '') {
@@ -256,10 +306,13 @@ function normalizeSampleSummary(string $filePath, array $row, int $recordIndex =
     $comments = firstNotEmpty($row, ['Comments']) ?? '';
 
     $unitId = firstNotEmpty($row, ['Unit ID']) ?? '-';
+    $unitDescription = firstNotEmpty($row, ['Unit Description', 'UnitDescription', 'Asset Name', 'AssetDescription']) ?? '-';
     $workId = firstNotEmpty($row, ['Work ID']) ?? '-';
     $accountName = firstNotEmpty($row, ['Account Name']) ?? '-';
     $accountId = firstNotEmpty($row, ['Account ID']) ?? '-';
     $sampler = firstNotEmpty($row, ['Sampler']) ?? '-';
+    $dateSampledMeta = sampleDateMeta(firstNotEmpty($row, ['Date Sampled']));
+    $dateReceivedMeta = sampleDateMeta(firstNotEmpty($row, ['Date Received']));
 
     return [
         'file' => basename($filePath),
@@ -272,6 +325,7 @@ function normalizeSampleSummary(string $filePath, array $row, int $recordIndex =
         'sampler' => $sampler,
         'assetId' => firstNotEmpty($row, ['Asset ID']) ?? '-',
         'unitId' => $unitId,
+        'unitDescription' => $unitDescription,
         'componentNumber' => extractComponentNumber($unitId),
         'workId' => $workId,
         'workOrder' => formatWorkOrder($workId),
@@ -284,6 +338,10 @@ function normalizeSampleSummary(string $filePath, array $row, int $recordIndex =
         'dateGroup' => $dateParts['groupKey'],
         'dateDisplay' => $dateParts['display'],
         'dateSort' => $dateParts['sort'],
+        'dateSampledDisplay' => (string) ($dateSampledMeta['display'] ?? '-'),
+        'dateSampledDaysSince' => $dateSampledMeta['daysSince'] ?? null,
+        'dateReceivedDisplay' => (string) ($dateReceivedMeta['display'] ?? '-'),
+        'dateReceivedDaysSince' => $dateReceivedMeta['daysSince'] ?? null,
         'raw' => $row
     ];
 }
@@ -453,6 +511,7 @@ function normalizeInProgressSummary(array $row): array
 
     $comments = firstNotEmpty($row, ['Comments']) ?? '';
     $unitId = firstNotEmpty($row, ['Unit ID', 'UnitID']) ?? '-';
+    $unitDescription = firstNotEmpty($row, ['Unit Description', 'UnitDescription', 'Asset Description', 'AssetDescription']) ?? '-';
     $workId = firstNotEmpty($row, ['Work ID', 'WorkID']) ?? '-';
     $accountName = firstNotEmpty($row, ['Account Name', 'AccountName', 'ClientName']) ?? '-';
     $accountId = firstNotEmpty($row, ['Account ID', 'AccountID', 'ClientID', 'ClientId']) ?? '-';
@@ -460,10 +519,16 @@ function normalizeInProgressSummary(array $row): array
     $sampleStatus = firstNotEmpty($row, ['Sample Status', 'SampleStatus']) ?? '-';
     $lifeCycleRaw = firstNotEmpty($row, ['LifeCycleStage', 'LifecycleStage']) ?? '';
     $lifeCycle = normalizeLifeCycleStageLabel($lifeCycleRaw);
-    $progressLabel = $sampleStatus;
+    $progressDateLabel = determineInProgressDateStageLabel($row);
+    $progressLabel = $progressDateLabel !== '' ? $progressDateLabel : $sampleStatus;
     if ($lifeCycle !== '' && $lifeCycle !== '-') {
-        $progressLabel = $sampleStatus !== '-' ? ($sampleStatus . ' / ' . $lifeCycle) : $lifeCycle;
+        if ($progressDateLabel === '') {
+            $progressLabel = $sampleStatus !== '-' ? ($sampleStatus . ' / ' . $lifeCycle) : $lifeCycle;
+        }
     }
+
+    $dateSampledMeta = sampleDateMeta(firstNotEmpty($row, ['Date Sampled', 'DateSampled']));
+    $dateReceivedMeta = sampleDateMeta(firstNotEmpty($row, ['Date Received', 'DateReceived']));
 
     return [
         'file' => '',
@@ -476,6 +541,7 @@ function normalizeInProgressSummary(array $row): array
         'sampler' => $sampler,
         'assetId' => firstNotEmpty($row, ['Asset ID', 'AssetId']) ?? '-',
         'unitId' => $unitId,
+        'unitDescription' => $unitDescription,
         'componentNumber' => extractComponentNumber($unitId),
         'workId' => $workId,
         'workOrder' => formatWorkOrder($workId),
@@ -492,6 +558,10 @@ function normalizeInProgressSummary(array $row): array
         'dateGroup' => $dateParts['groupKey'],
         'dateDisplay' => $dateParts['display'],
         'dateSort' => $dateParts['sort'],
+        'dateSampledDisplay' => (string) ($dateSampledMeta['display'] ?? '-'),
+        'dateSampledDaysSince' => $dateSampledMeta['daysSince'] ?? null,
+        'dateReceivedDisplay' => (string) ($dateReceivedMeta['display'] ?? '-'),
+        'dateReceivedDaysSince' => $dateReceivedMeta['daysSince'] ?? null,
         'isInProgress' => true,
         'raw' => $row,
     ];

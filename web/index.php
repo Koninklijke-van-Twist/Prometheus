@@ -141,44 +141,33 @@ function cardSearchPayload(array $item, array $reportStatus, string $headerDate)
     return strtolower(trim(implode(' ', $parts)));
 }
 
-function inProgressAccountLine(array $item): string
+function cardAccountTitle(array $item): string
 {
     $name = trim((string) ($item['accountName'] ?? ''));
-    $id = trim((string) ($item['accountId'] ?? ''));
-
-    if ($name !== '' && $id !== '') {
-        return $name . ' (' . $id . ')';
-    }
 
     if ($name !== '') {
         return $name;
     }
 
-    if ($id !== '') {
-        return $id;
-    }
-
-    return '-';
+    return trim((string) ($item['accountDisplay'] ?? '')) !== '' ? (string) ($item['accountDisplay'] ?? '-') : '-';
 }
 
-function inProgressSinceLine(array $item): string
+function cardLegacyId(array $item): string
 {
-    $registered = trim((string) ($item['dateRegisteredRaw'] ?? ''));
-    if ($registered === '') {
-        $registered = trim((string) ($item['dateDisplay'] ?? '-'));
+    $sampleId = trim((string) ($item['sampleId'] ?? ''));
+    return $sampleId !== '' ? $sampleId : '-';
+}
+
+function formatDateDaysSuffix($daysSince): string
+{
+    if (is_numeric($daysSince)) {
+        $days = (int) $daysSince;
+        if ($days >= 0) {
+            return '(' . $days . ' dagen geleden)';
+        }
     }
 
-    $days = (int) ($item['daysSinceSampled'] ?? 0);
-    if ($days <= 0) {
-        return $registered . ' - (onbekend sinds gesampled)';
-    }
-
-    $weeks = (int) floor($days / 7);
-    if ($weeks >= 1) {
-        return $registered . ' - (' . $weeks . ' ' . ($weeks === 1 ? "week" : "weken") . ' geleden gesampled)';
-    }
-
-    return $registered . ' - (' . $days . ' dagen geleden gesampled)';
+    return '';
 }
 
 function getMobilCacheDirFromConfig(): string
@@ -860,9 +849,14 @@ $ui = [
 
         .sample-title {
             display: flex;
-            align-items: center;
-            gap: 7px;
-            flex-wrap: wrap;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
+        }
+
+        .sample-subtitle {
+            font-size: 12px;
+            color: var(--muted);
         }
 
         .sampler-tag {
@@ -1158,7 +1152,7 @@ $ui = [
         <?php else: ?>
             <?php if (count($inProgressSummaries) > 0): ?>
                 <section class="group js-group">
-                    <h2>In progress (<?= count($inProgressSummaries) ?>)</h2>
+                    <h2 class="js-group-title" data-base-label="In progress">In progress (<span class="js-group-count"><?= count($inProgressSummaries) ?></span>)</h2>
                     <div class="grid">
                         <?php foreach ($inProgressSummaries as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
@@ -1183,7 +1177,9 @@ $ui = [
                                 style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                 <div class="card-head">
                                     <div class="sample-title">
-                                        <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                        <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                        <span
+                                            class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                     <div class="chip-stack">
                                         <?php if (!empty($item['actionRequired'])): ?>
@@ -1193,18 +1189,27 @@ $ui = [
                                             style="<?= htmlspecialchars($progressMeta['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($progressMeta['label'], ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                 </div>
-                                <div class="row">Account:
-                                    <?= htmlspecialchars(inProgressAccountLine($item), ENT_QUOTES, 'UTF-8') ?>
+                                <div class="row">Unit Description:
+                                    <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                 </div>
                                 <div class="row">Componentnummer:
-                                    <?= htmlspecialchars($item['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
+                                    <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                 </div>
-                                <?php if (trim((string) ($item['workOrder'] ?? '')) !== '' && trim((string) ($item['workOrder'] ?? '')) !== '-'): ?>
-                                    <div class="row">Werkorder:
-                                        <?= htmlspecialchars((string) $item['workOrder'], ENT_QUOTES, 'UTF-8') ?>
-                                    </div>
-                                <?php endif; ?>
-                                <div class="row"><?= htmlspecialchars(inProgressSinceLine($item), ENT_QUOTES, 'UTF-8') ?></div>
+                                <div class="row">Werkordernummer:
+                                    <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                </div>
+                                <div class="row">Sampled:
+                                    <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
+                                    <?php if ($sampledSuffix !== ''): ?>
+                                        <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                </div>
+                                <div class="row">Received:
+                                    <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
+                                    <?php if ($receivedSuffix !== ''): ?>
+                                        <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                </div>
                                 <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
                                     <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
                                 </span>
@@ -1216,7 +1221,7 @@ $ui = [
             <?php foreach ($groups as $groupKey => $group): ?>
                 <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
                 <section class="group js-group">
-                    <h2><?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<?= count($group['items']) ?>)</h2>
+                    <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span class="js-group-count"><?= count($group['items']) ?></span>)</h2>
                     <div class="grid">
                         <?php foreach ($group['items'] as $item): ?>
                             <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
@@ -1237,7 +1242,9 @@ $ui = [
                                 style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                 <div class="card-head">
                                     <div class="sample-title">
-                                        <strong><?= htmlspecialchars($item['sampleId'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                        <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                        <span
+                                            class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                     <div class="chip-stack">
                                         <?php if (!empty($item['actionRequired'])): ?>
@@ -1247,17 +1254,26 @@ $ui = [
                                             style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
                                 </div>
-                                <div class="row">Account:
-                                    <?= htmlspecialchars((string) ($item['accountDisplay'] ?? $item['accountName']), ENT_QUOTES, 'UTF-8') ?>
+                                <div class="row">Unit Description:
+                                    <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                 </div>
                                 <div class="row">Componentnummer:
-                                    <?= htmlspecialchars($item['componentNumber'], ENT_QUOTES, 'UTF-8') ?>
+                                    <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                 </div>
-                                <div class="row">Werkorder:
-                                    <?= htmlspecialchars($item['workOrder'], ENT_QUOTES, 'UTF-8') ?>
+                                <div class="row">Werkordernummer:
+                                    <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                 </div>
-                                <div class="row">Contamination status:
-                                    <?= htmlspecialchars($item['contaminationRating'], ENT_QUOTES, 'UTF-8') ?>
+                                <div class="row">Sampled:
+                                    <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
+                                    <?php if ($sampledSuffix !== ''): ?>
+                                        <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                </div>
+                                <div class="row">Received:
+                                    <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
+                                    <?php if ($receivedSuffix !== ''): ?>
+                                        <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
                                 </div>
                                 <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
                                     <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
@@ -1366,6 +1382,19 @@ $ui = [
                 groups.forEach(function (group)
                 {
                     const visibleInGroup = group.querySelectorAll('.card[data-status]:not(.hidden)').length;
+                    const titleEl = group.querySelector('.js-group-title');
+                    const countEl = group.querySelector('.js-group-count');
+                    if (countEl)
+                    {
+                        countEl.textContent = String(visibleInGroup);
+                    }
+
+                    if (titleEl && !countEl)
+                    {
+                        const baseLabel = titleEl.getAttribute('data-base-label') || titleEl.textContent.replace(/\s*\(\d+\)\s*$/, '');
+                        titleEl.textContent = baseLabel + ' (' + visibleInGroup + ')';
+                    }
+
                     group.classList.toggle('hidden', visibleInGroup === 0);
                 });
             };
