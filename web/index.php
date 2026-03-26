@@ -783,7 +783,7 @@ $activeSourcePath = $activeSourcePathResolved;
 $activeSampleCount = $isActivePdfSource
     ? count($pdfSummaries)
     : (count($visibleSummaries) + count($inProgressSummaries));
-$heroTitle = $isActivePdfSource ? ('Overzicht ' . $activeSourceName . '-samples') : 'Overzicht op datum';
+$heroTitle = ('Overzicht ' . $activeSourceName . '-samples');
 $heroDescription = $isActivePdfSource
     ? 'PDF-bestanden zijn gegroepeerd op basis van datum in de bestandsnaam.'
     : ($isActiveMobilSource
@@ -886,7 +886,7 @@ $ui = [
         }
 
         .wrap {
-            max-width: 1300px;
+            max-width: 1700px;
             margin: 0 auto;
             padding: 20px 16px 40px;
         }
@@ -1084,7 +1084,7 @@ $ui = [
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
             gap: 12px;
         }
 
@@ -1123,14 +1123,26 @@ $ui = [
 
         .sample-title {
             display: flex;
+            max-width: 75%;
             flex-direction: column;
             align-items: flex-start;
             gap: 2px;
         }
 
+        .cardTitle {
+            white-space: nowrap;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         .sample-subtitle {
             font-size: 12px;
+            max-width: 100%;
             color: var(--muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .sampler-tag {
@@ -1490,7 +1502,8 @@ $ui = [
                                     style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                     <div class="card-head">
                                         <div class="sample-title">
-                                            <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <strong
+                                                class="cardTitle"><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
                                             <span
                                                 class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
                                         </div>
@@ -1558,7 +1571,8 @@ $ui = [
                                     style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
                                     <div class="card-head">
                                         <div class="sample-title">
-                                            <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <strong
+                                                class="cardTitle"><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
                                             <span
                                                 class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
                                         </div>
@@ -1630,7 +1644,8 @@ $ui = [
                                     style="--card-top-accent: <?= htmlspecialchars((string) ($sampleType['accentColor'] ?? uiColor('sampleTypeUnknownBorder', '#c8d4d6')), ENT_QUOTES, 'UTF-8') ?>;">
                                     <div class="card-head">
                                         <div class="sample-title">
-                                            <strong><?= htmlspecialchars((string) ($item['description'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <strong
+                                                class="cardTitle"><?= htmlspecialchars((string) ($item['description'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></strong>
                                             <span
                                                 class="sample-subtitle"><?= htmlspecialchars((string) ($item['file'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></span>
                                         </div>
