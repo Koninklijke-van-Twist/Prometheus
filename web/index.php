@@ -282,6 +282,62 @@ function getMobilCacheDirFromConfig(): string
     return __DIR__ . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'mobil';
 }
 
+function getReadStatusCachePath(string $userEmail): string
+{
+    $dir = __DIR__ . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'read_status';
+    return $dir . DIRECTORY_SEPARATOR . md5(strtolower($userEmail)) . '.json';
+}
+
+function loadReadStatus(string $userEmail): array
+{
+    if ($userEmail === '') {
+        return [];
+    }
+
+    $path = getReadStatusCachePath($userEmail);
+    if (!is_file($path) || !is_readable($path)) {
+        return [];
+    }
+
+    $raw = file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function markSamplesRead(string $userEmail, array $keys): void
+{
+    if ($userEmail === '' || empty($keys)) {
+        return;
+    }
+
+    $path = getReadStatusCachePath($userEmail);
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+
+    $existing = loadReadStatus($userEmail);
+    $now = time();
+    foreach ($keys as $key) {
+        $key = trim((string) $key);
+        if ($key !== '') {
+            $existing[$key] = $now;
+        }
+    }
+
+    $json = json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        return;
+    }
+
+    $tmp = $path . '.tmp';
+    file_put_contents($tmp, $json);
+    @rename($tmp, $path);
+}
 
 function getDailyFetchStatePath(): string
 {
@@ -644,7 +700,40 @@ if (isset($_GET['download_pdf']) && is_string($_GET['download_pdf'])) {
     header('Content-Type: application/pdf');
     header('Content-Disposition: attachment; filename="' . rawurlencode($fileName) . '"');
     header('Content-Length: ' . (string) filesize($resolvedPath));
+
+    $downloadUserEmail = '';
+    if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
+        $downloadUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    }
+    markSamplesRead($downloadUserEmail, ['pdf:' . $fileName]);
+
     readfile($resolvedPath);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'mark_read') {
+    $handlerUserEmail = 'unknownuser@kvt.nl';
+    if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
+        $sessionEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+        if ($sessionEmail !== '') {
+            $handlerUserEmail = $sessionEmail;
+        }
+    }
+
+    $postKeys = [];
+    if (isset($_POST['keys']) && is_array($_POST['keys'])) {
+        foreach ($_POST['keys'] as $k) {
+            $k = trim((string) $k);
+            if ($k !== '' && strlen($k) <= 255) {
+                $postKeys[] = $k;
+            }
+        }
+    }
+
+    markSamplesRead($handlerUserEmail, $postKeys);
+    ob_clean();
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => true]);
     exit;
 }
 
@@ -761,10 +850,15 @@ if ($isActivePdfSource) {
     }
 }
 
-$currentUserEmail = '';
+$currentUserEmail = 'unknownuser@kvt.nl';
 if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
-    $currentUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $sessionEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    if ($sessionEmail !== '') {
+        $currentUserEmail = $sessionEmail;
+    }
 }
+
+$readStatus = loadReadStatus($currentUserEmail);
 
 $sourceTabs = [];
 foreach ($sourceDefinitions as $sourceDefinition) {
@@ -830,7 +924,7 @@ $ui = [
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Prometheus | Overzicht oliesamples</title>
+    <title>Prometheus | Overzicht samples</title>
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
@@ -949,6 +1043,33 @@ $ui = [
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
+            align-items: center;
+        }
+
+        .source-tabs-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-left: auto;
+        }
+
+        .source-action-btn {
+            border: 1px solid var(--line);
+            background: var(--card);
+            border-radius: 999px;
+            padding: 7px 12px;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--ink);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .source-action-btn:hover {
+            background: var(--brand-soft);
+            border-color: var(--brand);
+            color: var(--brand);
         }
 
         .source-tab {
@@ -1326,6 +1447,53 @@ $ui = [
             display: none !important;
         }
 
+        @keyframes unread-pulse {
+            0% {
+                transform: scale(1);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scale(5);
+                opacity: 0;
+            }
+        }
+
+        .unread-dot {
+            position: absolute;
+            top: -9px;
+            left: -9px;
+            width: 20px;
+            height: 20px;
+            background: #dc2626;
+            color: #fff;
+            border-radius: 50%;
+            font-size: 11px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+            pointer-events: none;
+            user-select: none;
+            z-index: 2;
+        }
+
+        .unread-dot::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background: #dc2626;
+            opacity: 0;
+            transform: scale(1);
+        }
+
+        .unread-dot.is-pulsing::after {
+            animation: unread-pulse 550ms ease-out forwards;
+        }
+
         @media (max-width: 700px) {
             .top {
                 align-items: flex-start;
@@ -1346,7 +1514,7 @@ $ui = [
                 <img src="images/kvtlogo_l.png" alt="Koninklijke van Twist logo">
                 <div>
                     <div><strong>Prometheus</strong></div>
-                    <div style="color:#4b605f;font-size:14px;">Dashboard oliesamples - Koninklijke van Twist</div>
+                    <div style="color:#4b605f;font-size:14px;">Dashboard samples - Koninklijke van Twist</div>
                 </div>
             </div>
             <div class="meta">
@@ -1370,6 +1538,13 @@ $ui = [
                     <small><?= htmlspecialchars((string) $sourceTab['fileType'], ENT_QUOTES, 'UTF-8') ?></small>
                 </a>
             <?php endforeach; ?>
+            <?php if ($currentUserEmail !== ''): ?>
+                <div class="source-tabs-actions">
+                    <button type="button" class="source-action-btn" id="scrollToFirstUnread">Ga naar eerste
+                        ongelezen</button>
+                    <button type="button" class="source-action-btn" id="markAllRead">Markeer alles als gelezen</button>
+                </div>
+            <?php endif; ?>
         </nav>
 
         <?php if ($isActiveMobilSource && $dailyFetchWarning !== ''): ?>
@@ -1562,13 +1737,19 @@ $ui = [
                                 }
                                 $samplerLower = strtolower($sampler);
                                 $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
+                                $readKey = 'json:' . basename((string) ($item['file'] ?? '')) . ':' . (int) ($item['recordIndex'] ?? 0);
+                                $isUnread = $currentUserEmail !== '' && !isset($readStatus[$readKey]);
                                 ?>
-                                <a class="card" data-filter-card="1"
+                                <a class="card<?= $isUnread ? ' is-unread' : '' ?>" data-filter-card="1"
+                                    data-read-key="<?= htmlspecialchars($readKey, ENT_QUOTES, 'UTF-8') ?>"
                                     href="sample.php?file=<?= urlencode($item['file']) ?>&record=<?= (int) ($item['recordIndex'] ?? 0) ?>"
                                     data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
                                     data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
                                     data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
                                     style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
+                                    <?php if ($isUnread): ?>
+                                        <span class="unread-dot" aria-label="Ongelezen">!</span>
+                                    <?php endif; ?>
                                     <div class="card-head">
                                         <div class="sample-title">
                                             <strong
@@ -1637,11 +1818,19 @@ $ui = [
                             <?php foreach ($group['items'] as $item): ?>
                                 <?php $sampleType = sampleTypeMeta((string) ($item['sampleType'] ?? '')); ?>
                                 <?php $searchPayload = pdfCardSearchPayload($item, $headerDate); ?>
-                                <a class="card" data-filter-card="1"
+                                <?php
+                                $readKey = 'pdf:' . basename((string) ($item['file'] ?? ''));
+                                $isUnread = $currentUserEmail !== '' && !isset($readStatus[$readKey]);
+                                ?>
+                                <a class="card<?= $isUnread ? ' is-unread' : '' ?>" data-filter-card="1"
+                                    data-read-key="<?= htmlspecialchars($readKey, ENT_QUOTES, 'UTF-8') ?>"
                                     href="<?= htmlspecialchars(buildPdfDownloadUrl((string) ($item['file'] ?? ''), $activeSource, $selectedYear), ENT_QUOTES, 'UTF-8') ?>"
                                     data-status="<?= htmlspecialchars((string) ($item['sampleTypeKey'] ?? '__unknown__'), ENT_QUOTES, 'UTF-8') ?>"
                                     data-action-required="0" data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
                                     style="--card-top-accent: <?= htmlspecialchars((string) ($sampleType['accentColor'] ?? uiColor('sampleTypeUnknownBorder', '#c8d4d6')), ENT_QUOTES, 'UTF-8') ?>;">
+                                    <?php if ($isUnread): ?>
+                                        <span class="unread-dot" aria-label="Ongelezen">!</span>
+                                    <?php endif; ?>
                                     <div class="card-head">
                                         <div class="sample-title">
                                             <strong
@@ -1797,6 +1986,137 @@ $ui = [
             }
 
             applyFilters();
+
+            // Ongelezen samples
+            const markReadUrl = 'index.php';
+
+            const sendMarkRead = function (keys)
+            {
+                if (keys.length === 0)
+                {
+                    return Promise.resolve();
+                }
+
+                const body = new URLSearchParams();
+                body.append('action', 'mark_read');
+                keys.forEach(function (k)
+                {
+                    body.append('keys[]', k);
+                });
+
+                return fetch(markReadUrl, { method: 'POST', body: body });
+            };
+
+            const removeUnreadDot = function (card)
+            {
+                card.classList.remove('is-unread');
+                const dot = card.querySelector('.unread-dot');
+                if (dot)
+                {
+                    dot.remove();
+                }
+            };
+
+            document.querySelectorAll('.card.is-unread[data-read-key]').forEach(function (card)
+            {
+                card.addEventListener('click', function (e)
+                {
+                    const readKey = card.dataset.readKey;
+                    if (!readKey)
+                    {
+                        return;
+                    }
+
+                    const href = card.href;
+                    if (!href)
+                    {
+                        return;
+                    }
+
+                    const isDownload = href.indexOf('download_pdf=') !== -1;
+
+                    if (isDownload)
+                    {
+                        // Browser blijft op de pagina bij een download — dot direct weghalen,
+                        // fetch loopt gewoon af op de achtergrond.
+                        removeUnreadDot(card);
+                        sendMarkRead([readKey]);
+                    }
+                    else
+                    {
+                        // Normale navigatie — wacht op de fetch voor we wegnavigeren.
+                        e.preventDefault();
+                        removeUnreadDot(card);
+                        sendMarkRead([readKey]).finally(function ()
+                        {
+                            window.location.href = href;
+                        });
+                    }
+                });
+            });
+
+            const pulseDot = function (card)
+            {
+                const dot = card.querySelector('.unread-dot');
+                if (!dot)
+                {
+                    return;
+                }
+
+                var count = 0;
+                var firePulse = function ()
+                {
+                    dot.classList.remove('is-pulsing');
+                    void dot.offsetWidth;
+                    dot.classList.add('is-pulsing');
+                    count++;
+                    dot.addEventListener('animationend', function ()
+                    {
+                        dot.classList.remove('is-pulsing');
+                        if (count < 3)
+                        {
+                            setTimeout(firePulse, 180);
+                        }
+                    }, { once: true });
+                };
+
+                firePulse();
+            };
+
+            const scrollToFirstUnreadBtn = document.getElementById('scrollToFirstUnread');
+            if (scrollToFirstUnreadBtn)
+            {
+                scrollToFirstUnreadBtn.addEventListener('click', function ()
+                {
+                    const firstUnread = document.querySelector('.card.is-unread:not(.hidden)');
+                    if (firstUnread)
+                    {
+                        firstUnread.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        // Slight delay so the pulse starts when the card is in view.
+                        setTimeout(function () { pulseDot(firstUnread); }, 400);
+                    }
+                });
+            }
+
+            const markAllReadBtn = document.getElementById('markAllRead');
+            if (markAllReadBtn)
+            {
+                markAllReadBtn.addEventListener('click', function ()
+                {
+                    const unreadCards = Array.from(document.querySelectorAll('.card.is-unread[data-read-key]'));
+                    if (unreadCards.length === 0)
+                    {
+                        return;
+                    }
+
+                    sendMarkRead(unreadCards.map(function (c) { return c.dataset.readKey; }));
+
+                    unreadCards.forEach(function (card)
+                    {
+                        removeUnreadDot(card);
+                    });
+                });
+            }
         })();
     </script>
 </body>
