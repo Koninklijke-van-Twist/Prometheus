@@ -26,6 +26,7 @@ if (!is_trusted_requester()) {
     require __DIR__ . "/../login/lib.php";
 
     if (
+        isset($allowedUsers) &&
         !array_any($allowedUsers, function ($email) {
             return $email == $_SESSION['user']['email'];
         })
