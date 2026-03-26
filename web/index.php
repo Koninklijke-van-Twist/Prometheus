@@ -141,6 +141,98 @@ function cardSearchPayload(array $item, array $reportStatus, string $headerDate)
     return strtolower(trim(implode(' ', $parts)));
 }
 
+function sourceTabKey(string $sourceName, int $index): string
+{
+    $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $sourceName) ?? '');
+    $slug = trim($slug, '-');
+    if ($slug === '') {
+        $slug = 'bron';
+    }
+
+    return $slug . '-' . ($index + 1);
+}
+
+function isMobilSource(array $sourceDefinition): bool
+{
+    $sourceType = strtolower(trim((string) ($sourceDefinition['fileType'] ?? '')));
+    $sourceName = strtolower(trim((string) ($sourceDefinition['name'] ?? '')));
+
+    return $sourceType === 'json' && $sourceName === 'mobil';
+}
+
+function buildSourceUrl(string $sourceKey, ?int $selectedYear, bool $includeYear): string
+{
+    $params = ['bron' => $sourceKey];
+    if ($includeYear && $selectedYear !== null) {
+        $params['jaar'] = (string) $selectedYear;
+    }
+
+    return 'index.php?' . http_build_query($params);
+}
+
+function pdfCardSearchPayload(array $item, string $headerDate): string
+{
+    $parts = [
+        (string) ($item['sampleType'] ?? ''),
+        (string) ($item['workOrder'] ?? ''),
+        (string) ($item['description'] ?? ''),
+        (string) ($item['file'] ?? ''),
+        $headerDate,
+    ];
+
+    return strtolower(trim(implode(' ', $parts)));
+}
+
+function sampleTypeMeta(string $sampleType): array
+{
+    $normalized = strtolower(trim($sampleType));
+
+    if ($normalized === 'diesel') {
+        return [
+            'label' => 'Diesel',
+            'inlineStyle' => 'background:' . uiColor('sampleTypeDieselBackground', '#e9f4ff')
+                . ';color:' . uiColor('sampleTypeDieselText', '#0a4e86')
+                . ';border-color:' . uiColor('sampleTypeDieselBorder', '#b8d7f1')
+                . ';',
+            'accentColor' => uiColor('sampleTypeDieselBorder', '#b8d7f1'),
+        ];
+    }
+
+    if ($normalized === 'koelvloeistof') {
+        return [
+            'label' => 'Koelvloeistof',
+            'inlineStyle' => 'background:' . uiColor('sampleTypeKoelvloeistofBackground', '#e7f8ef')
+                . ';color:' . uiColor('sampleTypeKoelvloeistofText', '#1e6948')
+                . ';border-color:' . uiColor('sampleTypeKoelvloeistofBorder', '#b8e2cd')
+                . ';',
+            'accentColor' => uiColor('sampleTypeKoelvloeistofBorder', '#b8e2cd'),
+        ];
+    }
+
+    return [
+        'label' => $sampleType !== '' ? $sampleType : 'Onbekend',
+        'inlineStyle' => 'background:' . uiColor('sampleTypeUnknownBackground', '#edf1f2')
+            . ';color:' . uiColor('sampleTypeUnknownText', '#405558')
+            . ';border-color:' . uiColor('sampleTypeUnknownBorder', '#c8d4d6')
+            . ';',
+        'accentColor' => uiColor('sampleTypeUnknownBorder', '#c8d4d6'),
+    ];
+}
+
+function buildPdfDownloadUrl(string $fileName, string $activeSource, ?int $selectedYear): string
+{
+    $params = [
+        'bron' => $activeSource,
+        'download_pdf' => $fileName,
+    ];
+
+    if ($selectedYear !== null) {
+        $params['jaar'] = (string) $selectedYear;
+    }
+
+    return 'index.php?' . http_build_query($params);
+}
+
 function cardAccountTitle(array $item): string
 {
     $name = trim((string) ($item['accountName'] ?? ''));
@@ -480,84 +572,193 @@ register_shutdown_function(function () {
     echo '</body></html>';
 });
 
-$dailyFetch = ensureDailyFetchExecuted();
+$configuredSources = getConfiguredSampleSources();
+$sourceDefinitions = [];
+foreach ($configuredSources as $sourceIndex => $configuredSource) {
+    $sourceName = trim((string) ($configuredSource['name'] ?? 'Bron ' . ((int) $sourceIndex + 1)));
+    $sourceType = strtolower(trim((string) ($configuredSource['type'] ?? 'json')));
+    $sourcePath = trim((string) ($configuredSource['path'] ?? ''));
+
+    if ($sourceName === '' || $sourcePath === '' || !in_array($sourceType, ['json', 'pdf'], true)) {
+        continue;
+    }
+
+    $sourceDefinitions[] = [
+        'key' => sourceTabKey($sourceName, (int) $sourceIndex),
+        'name' => $sourceName,
+        'path' => rtrim($sourcePath, "\\/"),
+        'fileType' => $sourceType,
+    ];
+}
+
+$sourceMap = [];
+foreach ($sourceDefinitions as $sourceDefinition) {
+    $sourceMap[$sourceDefinition['key']] = $sourceDefinition;
+}
+
+$activeSource = '';
+if (!empty($sourceDefinitions)) {
+    $activeSource = (string) $sourceDefinitions[0]['key'];
+}
+if (isset($_GET['bron']) && is_string($_GET['bron'])) {
+    $requestedSource = strtolower(trim($_GET['bron']));
+    if (isset($sourceMap[$requestedSource])) {
+        $activeSource = $requestedSource;
+    }
+}
+
+$activeSourceDefinition = isset($sourceMap[$activeSource]) ? $sourceMap[$activeSource] : (
+    !empty($sourceDefinitions)
+    ? $sourceDefinitions[0]
+    : ['key' => '', 'name' => '', 'path' => '', 'fileType' => 'json']
+);
+
+$activeSourceName = (string) ($activeSourceDefinition['name'] ?? '');
+$activeSourceType = (string) ($activeSourceDefinition['fileType'] ?? 'json');
+$activeSourcePathResolved = (string) ($activeSourceDefinition['path'] ?? '');
+$isActiveJsonSource = $activeSourceType === 'json';
+$isActivePdfSource = $activeSourceType === 'pdf';
+$isActiveMobilSource = isMobilSource($activeSourceDefinition);
+
+if (isset($_GET['download_pdf']) && is_string($_GET['download_pdf'])) {
+    $fileName = basename(trim($_GET['download_pdf']));
+    $sourceRoot = $isActivePdfSource ? realpath($activeSourcePathResolved) : false;
+    $candidatePath = ($isActivePdfSource && $activeSourcePathResolved !== '') ? $activeSourcePathResolved . DIRECTORY_SEPARATOR . $fileName : '';
+    $resolvedPath = $candidatePath !== '' ? realpath($candidatePath) : false;
+
+    $isValidPdf = $fileName !== ''
+        && preg_match('/\.pdf$/i', $fileName)
+        && $sourceRoot !== false
+        && $resolvedPath !== false
+        && strncmp($resolvedPath, $sourceRoot, strlen($sourceRoot)) === 0
+        && is_file($resolvedPath)
+        && is_readable($resolvedPath);
+
+    if (!$isValidPdf) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'PDF niet gevonden.';
+        exit;
+    }
+
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: attachment; filename="' . rawurlencode($fileName) . '"');
+    header('Content-Length: ' . (string) filesize($resolvedPath));
+    readfile($resolvedPath);
+    exit;
+}
+
+$dailyFetch = ['attempted' => false, 'ok' => true, 'message' => '', 'httpCode' => 0, 'responseBody' => ''];
 $dailyFetchWarning = '';
 $dailyFetchRetryUrl = (string) ($_SERVER['REQUEST_URI'] ?? 'index.php');
-$dailyFetchAttempt = (int) ($dailyFetch['attempt'] ?? 0);
-$dailyFetchHttpCode = (int) ($dailyFetch['httpCode'] ?? 0);
-$dailyFetchMessage = (string) ($dailyFetch['message'] ?? 'Onbekende fout bij fetch.');
-$dailyFetchRawResponse = trim((string) ($dailyFetch['responseBody'] ?? ''));
-if ($dailyFetchRawResponse === '') {
-    $dailyFetchRawResponse = '(geen response body beschikbaar)';
-}
-if (!empty($dailyFetch['attempted']) && empty($dailyFetch['ok'])) {
-    $dailyFetchWarning = 'onderhanden analyses nog niet binnengehaald';
-}
+$dailyFetchAttempt = 0;
+$dailyFetchHttpCode = 0;
+$dailyFetchMessage = '';
+$dailyFetchRawResponse = '(geen response body beschikbaar)';
 
-$samplePathResolved = getConfiguredSamplePath();
-$summaries = loadSampleSummaries($samplePathResolved);
-
-$availableYearMap = [];
-foreach ($summaries as $index => $summary) {
-    $year = extractReportYearFromFile((string) ($summary['file'] ?? ''));
-    $summaries[$index]['fileYear'] = $year;
-    if ($year !== null) {
-        $availableYearMap[$year] = true;
-    }
-}
-
-$availableYears = array_map('intval', array_keys($availableYearMap));
-rsort($availableYears);
-$latestYear = !empty($availableYears) ? max($availableYears) : null;
-
-$requestedYearRaw = null;
-if (isset($_GET['jaar']) && is_string($_GET['jaar'])) {
-    $requestedYearRaw = trim($_GET['jaar']);
-} elseif (isset($_GET['year']) && is_string($_GET['year'])) {
-    // Backward compatibility for old links.
-    $requestedYearRaw = trim($_GET['year']);
-}
-
-$selectedYear = $latestYear;
-if ($requestedYearRaw !== null && $requestedYearRaw !== '' && ctype_digit($requestedYearRaw)) {
-    $requestedYear = (int) $requestedYearRaw;
-    if (in_array($requestedYear, $availableYears, true)) {
-        $selectedYear = $requestedYear;
-    }
-}
-
-$visibleSummaries = $summaries;
-if ($selectedYear !== null) {
-    $visibleSummaries = array_values(array_filter($summaries, static function (array $summary) use ($selectedYear): bool {
-        return (int) ($summary['fileYear'] ?? 0) === $selectedYear;
-    }));
-}
-
-$statusFilterMap = [];
+$summaries = [];
+$visibleSummaries = [];
+$availableYears = [];
+$selectedYear = null;
+$statusFilters = [];
 $hasActionRequired = false;
-foreach ($visibleSummaries as $summary) {
-    $statusMeta = reportStatusMeta((string) ($summary['reportStatus'] ?? ''));
-    $statusFilterMap[$statusMeta['key']] = [
-        'key' => $statusMeta['key'],
-        'label' => $statusMeta['label'],
-        'inlineStyle' => $statusMeta['inlineStyle'],
-    ];
-
-    if (!empty($summary['actionRequired'])) {
-        $hasActionRequired = true;
-    }
-}
-$statusFilters = array_values($statusFilterMap);
-usort($statusFilters, static function (array $a, array $b): int {
-    return strcasecmp((string) $a['label'], (string) $b['label']);
-});
-
-$groups = groupSummariesByDate($visibleSummaries);
-$currentYear = (int) date('Y');
+$groups = [];
 $inProgressSummaries = [];
-if ($selectedYear === $currentYear) {
-    $inProgressCacheFile = getConfiguredInProgressCachePath();
-    $inProgressSummaries = loadInProgressSummariesFromCache($inProgressCacheFile);
+$pathOk = false;
+
+$pdfSummaries = [];
+$pdfGroups = [];
+$pdfPathOk = false;
+
+if ($isActiveJsonSource) {
+    if ($isActiveMobilSource) {
+        $dailyFetch = ensureDailyFetchExecuted();
+        $dailyFetchAttempt = (int) ($dailyFetch['attempt'] ?? 0);
+        $dailyFetchHttpCode = (int) ($dailyFetch['httpCode'] ?? 0);
+        $dailyFetchMessage = (string) ($dailyFetch['message'] ?? 'Onbekende fout bij fetch.');
+        $dailyFetchRawResponse = trim((string) ($dailyFetch['responseBody'] ?? ''));
+        if ($dailyFetchRawResponse === '') {
+            $dailyFetchRawResponse = '(geen response body beschikbaar)';
+        }
+        if (!empty($dailyFetch['attempted']) && empty($dailyFetch['ok'])) {
+            $dailyFetchWarning = 'onderhanden analyses nog niet binnengehaald';
+        }
+    }
+
+    $summaries = loadSampleSummaries($activeSourcePathResolved, $activeSourceName);
+
+    $availableYearMap = [];
+    foreach ($summaries as $index => $summary) {
+        $year = extractReportYearFromFile((string) ($summary['file'] ?? ''));
+        $summaries[$index]['fileYear'] = $year;
+        if ($year !== null) {
+            $availableYearMap[$year] = true;
+        }
+    }
+
+    if ($isActiveMobilSource) {
+        $availableYears = array_map('intval', array_keys($availableYearMap));
+        rsort($availableYears);
+        $latestYear = !empty($availableYears) ? max($availableYears) : null;
+
+        $requestedYearRaw = null;
+        if (isset($_GET['jaar']) && is_string($_GET['jaar'])) {
+            $requestedYearRaw = trim($_GET['jaar']);
+        } elseif (isset($_GET['year']) && is_string($_GET['year'])) {
+            // Backward compatibility for old links.
+            $requestedYearRaw = trim($_GET['year']);
+        }
+
+        $selectedYear = $latestYear;
+        if ($requestedYearRaw !== null && $requestedYearRaw !== '' && ctype_digit($requestedYearRaw)) {
+            $requestedYear = (int) $requestedYearRaw;
+            if (in_array($requestedYear, $availableYears, true)) {
+                $selectedYear = $requestedYear;
+            }
+        }
+    }
+
+    $visibleSummaries = $summaries;
+    if ($isActiveMobilSource && $selectedYear !== null) {
+        $visibleSummaries = array_values(array_filter($summaries, static function (array $summary) use ($selectedYear): bool {
+            return (int) ($summary['fileYear'] ?? 0) === $selectedYear;
+        }));
+    }
+
+    $statusFilterMap = [];
+    foreach ($visibleSummaries as $summary) {
+        $statusMeta = reportStatusMeta((string) ($summary['reportStatus'] ?? ''));
+        $statusFilterMap[$statusMeta['key']] = [
+            'key' => $statusMeta['key'],
+            'label' => $statusMeta['label'],
+            'inlineStyle' => $statusMeta['inlineStyle'],
+        ];
+
+        if (!empty($summary['actionRequired'])) {
+            $hasActionRequired = true;
+        }
+    }
+    $statusFilters = array_values($statusFilterMap);
+    usort($statusFilters, static function (array $a, array $b): int {
+        return strcasecmp((string) $a['label'], (string) $b['label']);
+    });
+
+    $groups = groupSummariesByDate($visibleSummaries);
+    $currentYear = (int) date('Y');
+    if ($isActiveMobilSource && $selectedYear === $currentYear) {
+        $inProgressCacheFile = getConfiguredInProgressCachePath();
+        $inProgressSummaries = loadInProgressSummariesFromCache($inProgressCacheFile);
+    }
+
+    $pathOk = $activeSourcePathResolved !== '' && is_dir($activeSourcePathResolved);
+}
+
+if ($isActivePdfSource) {
+    $pdfPathOk = $activeSourcePathResolved !== '' && is_dir($activeSourcePathResolved);
+    if ($pdfPathOk) {
+        $pdfSummaries = loadSamplePdfSummaries($activeSourcePathResolved);
+        $pdfGroups = groupSummariesByDate($pdfSummaries);
+    }
 }
 
 $currentUserEmail = '';
@@ -565,7 +766,29 @@ if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
     $currentUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
 }
 
-$pathOk = $samplePathResolved !== '' && is_dir($samplePathResolved);
+$sourceTabs = [];
+foreach ($sourceDefinitions as $sourceDefinition) {
+    $sourceKey = (string) $sourceDefinition['key'];
+    $sourceTabs[] = [
+        'key' => $sourceKey,
+        'name' => (string) $sourceDefinition['name'],
+        'path' => (string) $sourceDefinition['path'],
+        'fileType' => (string) $sourceDefinition['fileType'],
+        'url' => buildSourceUrl($sourceKey, $selectedYear, isMobilSource($sourceDefinition)),
+        'isActive' => $sourceKey === $activeSource,
+    ];
+}
+
+$activeSourcePath = $activeSourcePathResolved;
+$activeSampleCount = $isActivePdfSource
+    ? count($pdfSummaries)
+    : (count($visibleSummaries) + count($inProgressSummaries));
+$heroTitle = $isActivePdfSource ? ('Overzicht ' . $activeSourceName . '-samples') : 'Overzicht op datum';
+$heroDescription = $isActivePdfSource
+    ? 'PDF-bestanden zijn gegroepeerd op basis van datum in de bestandsnaam.'
+    : ($isActiveMobilSource
+        ? 'Rapportages zijn gegroepeerd op de datum waarin ze van Mobil ontvangen zijn.'
+        : 'Rapportages zijn gegroepeerd op datum.');
 
 $ui = [
     'bg' => uiColor('bg', '#f5f4ef'),
@@ -593,6 +816,12 @@ $ui = [
     'actionChipBackground' => uiColor('actionChipBackground', '#fff1dd'),
     'actionChipText' => uiColor('actionChipText', '#8a4a10'),
     'actionChipBorder' => uiColor('actionChipBorder', '#eac08d'),
+    'sourceTabBackground' => uiColor('sourceTabBackground', '#eef5fb'),
+    'sourceTabText' => uiColor('sourceTabText', '#0b2f57'),
+    'sourceTabBorder' => uiColor('sourceTabBorder', '#bdd6eb'),
+    'sourceTabActiveBackground' => uiColor('sourceTabActiveBackground', '#00529B'),
+    'sourceTabActiveText' => uiColor('sourceTabActiveText', '#ffffff'),
+    'sourceTabActiveBorder' => uiColor('sourceTabActiveBorder', '#00529B'),
 ];
 ?>
 <!doctype html>
@@ -713,6 +942,51 @@ $ui = [
         .hero p {
             margin: 0;
             opacity: 0.92;
+        }
+
+        .source-tabs {
+            margin-top: 14px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .source-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid
+                <?= htmlspecialchars($ui['sourceTabBorder'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            background:
+                <?= htmlspecialchars($ui['sourceTabBackground'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            color:
+                <?= htmlspecialchars($ui['sourceTabText'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            border-radius: 999px;
+            padding: 7px 12px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .source-tab small {
+            font-size: 11px;
+            opacity: 0.88;
+            font-weight: 500;
+        }
+
+        .source-tab.is-active {
+            background:
+                <?= htmlspecialchars($ui['sourceTabActiveBackground'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            color:
+                <?= htmlspecialchars($ui['sourceTabActiveText'], ENT_QUOTES, 'UTF-8') ?>
+            ;
+            border-color:
+                <?= htmlspecialchars($ui['sourceTabActiveBorder'], ENT_QUOTES, 'UTF-8') ?>
+            ;
         }
 
         .filters {
@@ -924,6 +1198,13 @@ $ui = [
             color: var(--muted);
         }
 
+        .card-download-note {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--brand);
+            font-weight: 600;
+        }
+
         .warn {
             margin-top: 16px;
             background:
@@ -1057,19 +1338,29 @@ $ui = [
                 </div>
             </div>
             <div class="meta">
-                <div>Totaal samples: <strong><?= count($summaries) ?></strong></div>
+                <div>Totaal samples: <strong><?= $activeSampleCount ?></strong></div>
                 <div>Bron:
-                    <?= htmlspecialchars($samplePathResolved !== '' ? $samplePathResolved : 'niet ingesteld', ENT_QUOTES, 'UTF-8') ?>
+                    <?= htmlspecialchars($activeSourcePath !== '' ? $activeSourcePath : 'niet ingesteld', ENT_QUOTES, 'UTF-8') ?>
                 </div>
             </div>
         </header>
 
         <section class="hero">
-            <h1>Overzicht op datum</h1>
-            <p>Rapportages zijn gegroepeerd op de datum waarin ze van Mobil ontvangen zijn.</p>
+            <h1><?= htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8') ?></h1>
+            <p><?= htmlspecialchars($heroDescription, ENT_QUOTES, 'UTF-8') ?></p>
         </section>
 
-        <?php if ($dailyFetchWarning !== ''): ?>
+        <nav class="source-tabs" aria-label="Databronnen">
+            <?php foreach ($sourceTabs as $sourceTab): ?>
+                <a class="source-tab<?= !empty($sourceTab['isActive']) ? ' is-active' : '' ?>"
+                    href="<?= htmlspecialchars((string) $sourceTab['url'], ENT_QUOTES, 'UTF-8') ?>">
+                    <span><?= htmlspecialchars((string) $sourceTab['name'], ENT_QUOTES, 'UTF-8') ?></span>
+                    <small><?= htmlspecialchars((string) $sourceTab['fileType'], ENT_QUOTES, 'UTF-8') ?></small>
+                </a>
+            <?php endforeach; ?>
+        </nav>
+
+        <?php if ($isActiveMobilSource && $dailyFetchWarning !== ''): ?>
             <div class="warn">
                 <div class="warn-line">
                     <span><?= htmlspecialchars($dailyFetchWarning, ENT_QUOTES, 'UTF-8') ?></span>
@@ -1099,23 +1390,26 @@ $ui = [
             </div>
         <?php endif; ?>
 
-        <?php if (count($summaries) > 0): ?>
+        <?php if ($isActiveJsonSource && count($summaries) > 0): ?>
             <section class="filters">
                 <form method="get" class="filters-head" id="yearFilterForm">
+                    <input type="hidden" name="bron" value="<?= htmlspecialchars($activeSource, ENT_QUOTES, 'UTF-8') ?>">
                     <div class="filter-controls">
-                        <label for="yearSelect">Jaar</label>
-                        <select id="yearSelect" name="jaar" onchange="this.form.submit()">
-                            <?php foreach ($availableYears as $year): ?>
-                                <option value="<?= $year ?>" <?= $selectedYear === $year ? 'selected' : '' ?>><?= $year ?></option>
-                            <?php endforeach; ?>
-                        </select>
+                        <?php if ($isActiveMobilSource): ?>
+                            <label for="yearSelect">Jaar</label>
+                            <select id="yearSelect" name="jaar" onchange="this.form.submit()">
+                                <?php foreach ($availableYears as $year): ?>
+                                    <option value="<?= $year ?>" <?= $selectedYear === $year ? 'selected' : '' ?>><?= $year ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                         <label for="overviewSearch">Zoeken</label>
                         <input type="search" id="overviewSearch"
                             placeholder="Zoek in sample, status, account, componentnummer, werkorder, contamination"
                             autocomplete="off">
                     </div>
                     <div style="font-size:13px;color:var(--muted);">
-                        Zichtbaar in <?= htmlspecialchars((string) ($selectedYear ?? '-'), ENT_QUOTES, 'UTF-8') ?>:
+                        <?= $isActiveMobilSource ? ('Zichtbaar in ' . htmlspecialchars((string) ($selectedYear ?? '-'), ENT_QUOTES, 'UTF-8') . ':') : 'Zichtbaar:' ?>
                         <strong><?= count($visibleSummaries) ?></strong>
                     </div>
                 </form>
@@ -1141,151 +1435,221 @@ $ui = [
             </section>
         <?php endif; ?>
 
-        <?php if (!$pathOk): ?>
-            <div class="warn">Het ingestelde sample pad bestaat niet:
-                <code><?= htmlspecialchars($samplePathResolved, ENT_QUOTES, 'UTF-8') ?></code>
-            </div>
-        <?php elseif (count($summaries) === 0): ?>
-            <div class="warn">Er zijn geen leesbare JSON-samples gevonden in
-                <code><?= htmlspecialchars($samplePathResolved, ENT_QUOTES, 'UTF-8') ?></code>.
-            </div>
-        <?php else: ?>
-            <?php if (count($inProgressSummaries) > 0): ?>
-                <section class="group js-group">
-                    <h2 class="js-group-title" data-base-label="In progress">In progress (<span
-                            class="js-group-count"><?= count($inProgressSummaries) ?></span>)</h2>
-                    <div class="grid">
-                        <?php foreach ($inProgressSummaries as $item): ?>
-                            <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
-                            <?php $progressMeta = reportStatusMeta((string) ($item['progressStatus'] ?? ($item['sampleStatus'] ?? 'In progress'))); ?>
-                            <?php $searchPayload = cardSearchPayload($item, $progressMeta, 'in progress'); ?>
-                            <?php $workflowReportId = trim((string) ($item['workflowReportId'] ?? '')); ?>
-                            <?php if ($workflowReportId === '') {
-                                continue;
-                            } ?>
-                            <?php
-                            $sampler = trim((string) ($item['sampler'] ?? '-'));
-                            if ($sampler === '') {
-                                $sampler = '-';
-                            }
-                            $samplerLower = strtolower($sampler);
-                            $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
-                            ?>
-                            <a class="card" href="sample.php?inprogress=1&workflowreportid=<?= urlencode($workflowReportId) ?>"
-                                data-status="<?= htmlspecialchars($progressMeta['key'], ENT_QUOTES, 'UTF-8') ?>"
-                                data-in-progress="1" data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
-                                data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
-                                style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
-                                <div class="card-head">
-                                    <div class="sample-title">
-                                        <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
-                                        <span
-                                            class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
-                                    </div>
-                                    <div class="chip-stack">
-                                        <?php if (!empty($item['actionRequired'])): ?>
-                                            <span class="chip chip-action">Action Required</span>
-                                        <?php endif; ?>
-                                        <span class="chip"
-                                            style="<?= htmlspecialchars($progressMeta['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($progressMeta['label'], ENT_QUOTES, 'UTF-8') ?></span>
-                                    </div>
-                                </div>
-                                <div class="row">Unit Description:
-                                    <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Componentnummer:
-                                    <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Werkordernummer:
-                                    <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Sampled:
-                                    <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                    <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
-                                    <?php if ($sampledSuffix !== ''): ?>
-                                        <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
-                                </div>
-                                <div class="row">Received:
-                                    <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                    <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
-                                    <?php if ($receivedSuffix !== ''): ?>
-                                        <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
-                                </div>
-                                <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
-                                    <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
-                                </span>
-                            </a>
-                        <?php endforeach; ?>
+        <?php if ($isActivePdfSource && count($pdfSummaries) > 0): ?>
+            <section class="filters">
+                <div class="filters-head">
+                    <div class="filter-controls">
+                        <label for="overviewSearch">Zoeken</label>
+                        <input type="search" id="overviewSearch"
+                            placeholder="Zoek in sampletype, werkorder, beschrijving of bestandsnaam" autocomplete="off">
                     </div>
-                </section>
+                    <div style="font-size:13px;color:var(--muted);">
+                        <?= htmlspecialchars($activeSourceName, ENT_QUOTES, 'UTF-8') ?>-bestanden:
+                        <strong><?= count($pdfSummaries) ?></strong>
+                    </div>
+                </div>
+            </section>
+        <?php endif; ?>
+
+        <?php if ($isActiveJsonSource): ?>
+            <?php if (!$pathOk): ?>
+                <div class="warn">Het ingestelde sample pad bestaat niet:
+                    <code><?= htmlspecialchars($activeSourcePathResolved, ENT_QUOTES, 'UTF-8') ?></code>
+                </div>
+            <?php elseif (count($summaries) === 0): ?>
+                <div class="warn">Er zijn geen leesbare JSON-samples gevonden in
+                    <code><?= htmlspecialchars($activeSourcePathResolved, ENT_QUOTES, 'UTF-8') ?></code>.
+                </div>
+            <?php else: ?>
+                <?php if ($isActiveMobilSource && count($inProgressSummaries) > 0): ?>
+                    <section class="group js-group">
+                        <h2 class="js-group-title" data-base-label="In progress">In progress (<span
+                                class="js-group-count"><?= count($inProgressSummaries) ?></span>)</h2>
+                        <div class="grid">
+                            <?php foreach ($inProgressSummaries as $item): ?>
+                                <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
+                                <?php $progressMeta = reportStatusMeta((string) ($item['progressStatus'] ?? ($item['sampleStatus'] ?? 'In progress'))); ?>
+                                <?php $searchPayload = cardSearchPayload($item, $progressMeta, 'in progress'); ?>
+                                <?php $workflowReportId = trim((string) ($item['workflowReportId'] ?? '')); ?>
+                                <?php if ($workflowReportId === '') {
+                                    continue;
+                                } ?>
+                                <?php
+                                $sampler = trim((string) ($item['sampler'] ?? '-'));
+                                if ($sampler === '') {
+                                    $sampler = '-';
+                                }
+                                $samplerLower = strtolower($sampler);
+                                $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
+                                ?>
+                                <a class="card" data-filter-card="1"
+                                    href="sample.php?inprogress=1&workflowreportid=<?= urlencode($workflowReportId) ?>"
+                                    data-status="<?= htmlspecialchars($progressMeta['key'], ENT_QUOTES, 'UTF-8') ?>"
+                                    data-in-progress="1" data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
+                                    data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
+                                    style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
+                                    <div class="card-head">
+                                        <div class="sample-title">
+                                            <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <span
+                                                class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
+                                        </div>
+                                        <div class="chip-stack">
+                                            <?php if (!empty($item['actionRequired'])): ?>
+                                                <span class="chip chip-action">Action Required</span>
+                                            <?php endif; ?>
+                                            <span class="chip"
+                                                style="<?= htmlspecialchars($progressMeta['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($progressMeta['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                        </div>
+                                    </div>
+                                    <div class="row">Unit Description:
+                                        <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Componentnummer:
+                                        <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Werkordernummer:
+                                        <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Sampled:
+                                        <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
+                                        <?php if ($sampledSuffix !== ''): ?>
+                                            <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                    </div>
+                                    <div class="row">Received:
+                                        <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
+                                        <?php if ($receivedSuffix !== ''): ?>
+                                            <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                    </div>
+                                    <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
+                                        <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
+                <?php foreach ($groups as $groupKey => $group): ?>
+                    <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
+                    <section class="group js-group">
+                        <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>">
+                            <?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span
+                                class="js-group-count"><?= count($group['items']) ?></span>)
+                        </h2>
+                        <div class="grid">
+                            <?php foreach ($group['items'] as $item): ?>
+                                <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
+                                <?php $searchPayload = cardSearchPayload($item, $reportStatus, $headerDate); ?>
+                                <?php
+                                $sampler = trim((string) ($item['sampler'] ?? '-'));
+                                if ($sampler === '') {
+                                    $sampler = '-';
+                                }
+                                $samplerLower = strtolower($sampler);
+                                $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
+                                ?>
+                                <a class="card" data-filter-card="1"
+                                    href="sample.php?file=<?= urlencode($item['file']) ?>&record=<?= (int) ($item['recordIndex'] ?? 0) ?>"
+                                    data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
+                                    data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
+                                    data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
+                                    style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
+                                    <div class="card-head">
+                                        <div class="sample-title">
+                                            <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <span
+                                                class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
+                                        </div>
+                                        <div class="chip-stack">
+                                            <?php if (!empty($item['actionRequired'])): ?>
+                                                <span class="chip chip-action">Action Required</span>
+                                            <?php endif; ?>
+                                            <span class="chip"
+                                                style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                        </div>
+                                    </div>
+                                    <div class="row">Unit Description:
+                                        <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Componentnummer:
+                                        <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Werkordernummer:
+                                        <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Sampled:
+                                        <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
+                                        <?php if ($sampledSuffix !== ''): ?>
+                                            <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                    </div>
+                                    <div class="row">Received:
+                                        <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
+                                        <?php if ($receivedSuffix !== ''): ?>
+                                            <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
+                                    </div>
+                                    <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
+                                        <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endforeach; ?>
             <?php endif; ?>
-            <?php foreach ($groups as $groupKey => $group): ?>
-                <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
-                <section class="group js-group">
-                    <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>">
-                        <?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span
-                            class="js-group-count"><?= count($group['items']) ?></span>)</h2>
-                    <div class="grid">
-                        <?php foreach ($group['items'] as $item): ?>
-                            <?php $reportStatus = reportStatusMeta((string) ($item['reportStatus'] ?? '')); ?>
-                            <?php $searchPayload = cardSearchPayload($item, $reportStatus, $headerDate); ?>
-                            <?php
-                            $sampler = trim((string) ($item['sampler'] ?? '-'));
-                            if ($sampler === '') {
-                                $sampler = '-';
-                            }
-                            $samplerLower = strtolower($sampler);
-                            $samplerMatchesUser = $currentUserEmail !== '' && $samplerLower === $currentUserEmail;
-                            ?>
-                            <a class="card"
-                                href="sample.php?file=<?= urlencode($item['file']) ?>&record=<?= (int) ($item['recordIndex'] ?? 0) ?>"
-                                data-status="<?= htmlspecialchars($reportStatus['key'], ENT_QUOTES, 'UTF-8') ?>"
-                                data-action-required="<?= !empty($item['actionRequired']) ? '1' : '0' ?>"
-                                data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
-                                style="border-color: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>; --card-top-accent: <?= htmlspecialchars($reportStatus['borderColor'], ENT_QUOTES, 'UTF-8') ?>;">
-                                <div class="card-head">
-                                    <div class="sample-title">
-                                        <strong><?= htmlspecialchars(cardAccountTitle($item), ENT_QUOTES, 'UTF-8') ?></strong>
-                                        <span
-                                            class="sample-subtitle"><?= htmlspecialchars(cardLegacyId($item), ENT_QUOTES, 'UTF-8') ?></span>
-                                    </div>
-                                    <div class="chip-stack">
-                                        <?php if (!empty($item['actionRequired'])): ?>
-                                            <span class="chip chip-action">Action Required</span>
-                                        <?php endif; ?>
+        <?php endif; ?>
+
+        <?php if ($isActivePdfSource): ?>
+            <?php if (!$pdfPathOk): ?>
+                <div class="warn">Het ingestelde PDF-pad bestaat niet:
+                    <code><?= htmlspecialchars($activeSourcePathResolved, ENT_QUOTES, 'UTF-8') ?></code>
+                </div>
+            <?php elseif (count($pdfSummaries) === 0): ?>
+                <div class="warn">Er zijn geen leesbare PDF-samples gevonden in
+                    <code><?= htmlspecialchars($activeSourcePathResolved, ENT_QUOTES, 'UTF-8') ?></code>.
+                </div>
+            <?php else: ?>
+                <?php foreach ($pdfGroups as $groupKey => $group): ?>
+                    <?php $headerDate = formatDutchDateHeader((string) $groupKey, (string) $group['label']); ?>
+                    <section class="group js-group">
+                        <h2 class="js-group-title" data-base-label="<?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?>">
+                            <?= htmlspecialchars($headerDate, ENT_QUOTES, 'UTF-8') ?> (<span
+                                class="js-group-count"><?= count($group['items']) ?></span>)
+                        </h2>
+                        <div class="grid">
+                            <?php foreach ($group['items'] as $item): ?>
+                                <?php $sampleType = sampleTypeMeta((string) ($item['sampleType'] ?? '')); ?>
+                                <?php $searchPayload = pdfCardSearchPayload($item, $headerDate); ?>
+                                <a class="card" data-filter-card="1"
+                                    href="<?= htmlspecialchars(buildPdfDownloadUrl((string) ($item['file'] ?? ''), $activeSource, $selectedYear), ENT_QUOTES, 'UTF-8') ?>"
+                                    data-status="<?= htmlspecialchars((string) ($item['sampleTypeKey'] ?? '__unknown__'), ENT_QUOTES, 'UTF-8') ?>"
+                                    data-action-required="0" data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
+                                    style="--card-top-accent: <?= htmlspecialchars((string) ($sampleType['accentColor'] ?? uiColor('sampleTypeUnknownBorder', '#c8d4d6')), ENT_QUOTES, 'UTF-8') ?>;">
+                                    <div class="card-head">
+                                        <div class="sample-title">
+                                            <strong><?= htmlspecialchars((string) ($item['description'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></strong>
+                                            <span
+                                                class="sample-subtitle"><?= htmlspecialchars((string) ($item['file'] ?? '-'), ENT_QUOTES, 'UTF-8') ?></span>
+                                        </div>
                                         <span class="chip"
-                                            style="<?= htmlspecialchars($reportStatus['inlineStyle'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($reportStatus['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                            style="<?= htmlspecialchars((string) ($sampleType['inlineStyle'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars((string) ($sampleType['label'] ?? 'Onbekend'), ENT_QUOTES, 'UTF-8') ?></span>
                                     </div>
-                                </div>
-                                <div class="row">Unit Description:
-                                    <?= htmlspecialchars((string) ($item['unitDescription'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Componentnummer:
-                                    <?= htmlspecialchars((string) ($item['componentNumber'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Werkordernummer:
-                                    <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                </div>
-                                <div class="row">Sampled:
-                                    <?= htmlspecialchars((string) ($item['dateSampledDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                    <?php $sampledSuffix = formatDateDaysSuffix($item['dateSampledDaysSince'] ?? null); ?>
-                                    <?php if ($sampledSuffix !== ''): ?>
-                                        <small><?= htmlspecialchars($sampledSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
-                                </div>
-                                <div class="row">Received:
-                                    <?= htmlspecialchars((string) ($item['dateReceivedDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
-                                    <?php $receivedSuffix = formatDateDaysSuffix($item['dateReceivedDaysSince'] ?? null); ?>
-                                    <?php if ($receivedSuffix !== ''): ?>
-                                        <small><?= htmlspecialchars($receivedSuffix, ENT_QUOTES, 'UTF-8') ?></small><?php endif; ?>
-                                </div>
-                                <span class="sampler-tag sampler-corner<?= $samplerMatchesUser ? ' match' : '' ?>">
-                                    <?= htmlspecialchars($sampler, ENT_QUOTES, 'UTF-8') ?>
-                                </span>
-                            </a>
-                        <?php endforeach; ?>
-                    </div>
-                </section>
-            <?php endforeach; ?>
+                                    <div class="row">Werkordernummer:
+                                        <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="row">Datum:
+                                        <?= htmlspecialchars((string) ($item['dateDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
+                                    </div>
+                                    <div class="card-download-note">Klik om PDF te downloaden</div>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endforeach; ?>
+            <?php endif; ?>
         <?php endif; ?>
     </div>
     <script>

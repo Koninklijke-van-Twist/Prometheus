@@ -10,11 +10,48 @@
  */
 function getConfiguredSamplePath(): string
 {
-    if (!isset($GLOBALS['samplePath']) || !is_string($GLOBALS['samplePath']) || trim($GLOBALS['samplePath']) === '') {
-        return '';
+    foreach (getConfiguredSampleSources() as $source) {
+        if ((string) ($source['type'] ?? '') !== 'json') {
+            continue;
+        }
+
+        $path = trim((string) ($source['path'] ?? ''));
+        if ($path !== '') {
+            return rtrim($path, "\\/");
+        }
     }
 
-    return rtrim(trim($GLOBALS['samplePath']), "\\/");
+    return '';
+}
+
+function getConfiguredSampleSources(): array
+{
+    $rawSources = $GLOBALS['samplePaths'] ?? null;
+    $normalizedSources = [];
+
+    if (is_array($rawSources)) {
+        foreach ($rawSources as $index => $rawSource) {
+            if (!is_array($rawSource)) {
+                continue;
+            }
+
+            $name = trim((string) ($rawSource['name'] ?? 'Bron ' . ((int) $index + 1)));
+            $type = strtolower(trim((string) ($rawSource['type'] ?? 'json')));
+            $path = trim((string) ($rawSource['path'] ?? ''));
+
+            if ($name === '' || $path === '' || !in_array($type, ['json', 'pdf'], true)) {
+                continue;
+            }
+
+            $normalizedSources[] = [
+                'name' => $name,
+                'type' => $type,
+                'path' => rtrim($path, "\\/"),
+            ];
+        }
+    }
+
+    return $normalizedSources;
 }
 
 function listSampleJsonFiles(string $samplePath): array
@@ -87,6 +124,19 @@ function parseSampleJsonRecords(string $filePath): array
     }
 
     return is_array($decoded) ? [$decoded] : [];
+}
+
+function parseSampleJsonRecordsBySource(string $filePath, string $sourceName): array
+{
+    $normalizedSourceName = strtolower(trim($sourceName));
+
+    switch ($normalizedSourceName) {
+        case 'mobil':
+            return parseSampleJsonRecords($filePath);
+        default:
+            // Default parser; bronnaam wordt bewust doorgegeven zodat we vendorspecifiek kunnen uitbreiden.
+            return parseSampleJsonRecords($filePath);
+    }
 }
 
 function sampleMapColumnsResultsToRows(array $columns, array $results): array
@@ -346,12 +396,12 @@ function normalizeSampleSummary(string $filePath, array $row, int $recordIndex =
     ];
 }
 
-function loadSampleSummaries(string $samplePath): array
+function loadSampleSummaries(string $samplePath, string $sourceName = 'Mobil'): array
 {
     $summaries = [];
 
     foreach (listSampleJsonFiles($samplePath) as $filePath) {
-        $rows = parseSampleJsonRecords($filePath);
+        $rows = parseSampleJsonRecordsBySource($filePath, $sourceName);
         foreach ($rows as $recordIndex => $row) {
             if (!is_array($row) || $row === []) {
                 continue;
@@ -585,4 +635,121 @@ function normalizeLifeCycleStageLabel(string $value): string
     }
 
     return $trimmed;
+}
+
+function getConfiguredSamplePdfPath(): string
+{
+    foreach (getConfiguredSampleSources() as $source) {
+        if ((string) ($source['type'] ?? '') !== 'pdf') {
+            continue;
+        }
+
+        $path = trim((string) ($source['path'] ?? ''));
+        if ($path !== '') {
+            return rtrim($path, "\\/");
+        }
+    }
+
+    return '';
+}
+
+function listSamplePdfFiles(string $samplePathPdf): array
+{
+    if ($samplePathPdf === '' || !is_dir($samplePathPdf)) {
+        return [];
+    }
+
+    $pattern = $samplePathPdf . DIRECTORY_SEPARATOR . '*.pdf';
+    $files = glob($pattern);
+    if ($files === false) {
+        return [];
+    }
+
+    usort($files, static function (string $a, string $b): int {
+        return filemtime($b) <=> filemtime($a);
+    });
+
+    return $files;
+}
+
+function normalizeSampleTypeFromFilename(string $sampleTypeRaw): string
+{
+    $normalized = strtolower(trim($sampleTypeRaw));
+    $normalized = str_replace(['-', ' '], '', $normalized);
+
+    if ($normalized === 'diesel') {
+        return 'Diesel';
+    }
+
+    if ($normalized === 'koelvloeistof') {
+        return 'Koelvloeistof';
+    }
+
+    return trim($sampleTypeRaw) !== '' ? trim($sampleTypeRaw) : '-';
+}
+
+function parseSamplePdfFilenameMeta(string $filePath): array
+{
+    $fileName = basename($filePath);
+    $baseName = preg_replace('/\.pdf$/i', '', $fileName) ?? $fileName;
+    $baseName = preg_replace('/\.pdf$/i', '', $baseName) ?? $baseName;
+
+    $parts = explode('_', (string) $baseName, 4);
+    $dateRaw = trim((string) ($parts[0] ?? ''));
+    $sampleTypeRaw = trim((string) ($parts[1] ?? ''));
+    $workOrderRaw = trim((string) ($parts[2] ?? ''));
+    $descriptionRaw = trim((string) ($parts[3] ?? ''));
+
+    $dateDisplay = '-';
+    $dateGroup = '';
+    $dateSort = '';
+
+    if (preg_match('/^(\d{2})-(\d{2})-(\d{4})$/', $dateRaw, $dateMatches)) {
+        $isoDate = $dateMatches[3] . '-' . $dateMatches[2] . '-' . $dateMatches[1];
+        $meta = sampleDateParts($isoDate);
+        if ($meta !== null) {
+            $dateDisplay = (string) ($meta['display'] ?? '-');
+            $dateGroup = (string) ($meta['groupKey'] ?? '');
+            $dateSort = (string) ($meta['sort'] ?? '');
+        }
+    }
+
+    if ($dateSort === '') {
+        $fallback = (new DateTimeImmutable())->setTimestamp((int) filemtime($filePath));
+        $dateDisplay = $fallback->format('d-m-Y');
+        $dateGroup = $fallback->format('Y-m-d');
+        $dateSort = $fallback->format('YmdHis');
+    }
+
+    $sampleType = normalizeSampleTypeFromFilename($sampleTypeRaw);
+    $workOrder = formatWorkOrder($workOrderRaw);
+    $description = $descriptionRaw !== '' ? $descriptionRaw : '-';
+
+    return [
+        'file' => $fileName,
+        'path' => $filePath,
+        'sampleId' => pathinfo((string) $baseName, PATHINFO_FILENAME),
+        'sampleType' => $sampleType,
+        'sampleTypeKey' => strtolower($sampleType),
+        'workOrder' => $workOrder,
+        'description' => $description,
+        'dateGroup' => $dateGroup,
+        'dateDisplay' => $dateDisplay,
+        'dateSort' => $dateSort,
+    ];
+}
+
+function loadSamplePdfSummaries(string $samplePathPdf): array
+{
+    $summaries = [];
+
+    foreach (listSamplePdfFiles($samplePathPdf) as $filePath) {
+        $summaries[] = parseSamplePdfFilenameMeta($filePath);
+    }
+
+    usort($summaries, static function (array $a, array $b): int {
+        return strcmp((string) ($b['dateSort'] ?? ''), (string) ($a['dateSort'] ?? ''));
+    });
+
+    return $summaries;
 }

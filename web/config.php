@@ -33,6 +33,23 @@ $prometheusConfig = [
         'actionChipText' => '#8a5b14',
         'actionChipBorder' => '#eccf9a',
 
+        'sourceTabBackground' => '#eef5fb',
+        'sourceTabText' => '#0b2f57',
+        'sourceTabBorder' => '#bdd6eb',
+        'sourceTabActiveBackground' => '#00529B',
+        'sourceTabActiveText' => '#ffffff',
+        'sourceTabActiveBorder' => '#00529B',
+
+        'sampleTypeDieselBackground' => '#e9f4ff',
+        'sampleTypeDieselText' => '#0a4e86',
+        'sampleTypeDieselBorder' => '#b8d7f1',
+        'sampleTypeKoelvloeistofBackground' => '#e7f8ef',
+        'sampleTypeKoelvloeistofText' => '#1e6948',
+        'sampleTypeKoelvloeistofBorder' => '#b8e2cd',
+        'sampleTypeUnknownBackground' => '#edf1f2',
+        'sampleTypeUnknownText' => '#405558',
+        'sampleTypeUnknownBorder' => '#c8d4d6',
+
         'warnBackground' => '#edf7ff',
         'warnBorder' => '#a9ccec',
         'warnText' => '#0b2f57',
