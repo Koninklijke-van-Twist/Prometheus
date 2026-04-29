@@ -195,6 +195,12 @@ try {
     $inProgressCacheFile = isset($_GET['inprogresscache'])
         ? trim((string) $_GET['inprogresscache'])
         : (string) ($mobilConfig['inProgressCacheFile'] ?? '');
+    $caInfo = isset($_GET['cainfo'])
+        ? trim((string) $_GET['cainfo'])
+        : (string) ($mobilConfig['caInfo'] ?? '');
+    $caPath = isset($_GET['capath'])
+        ? trim((string) $_GET['capath'])
+        : (string) ($mobilConfig['caPath'] ?? '');
 
     $client = new MobilApiClient([
         'environment' => $environment,
@@ -206,6 +212,8 @@ try {
         'apiKey' => $apiKey,
         'authEmail' => $authEmail,
         'authUserId' => $authUserId,
+        'caInfo' => $caInfo,
+        'caPath' => $caPath,
     ]);
 
     $action = isset($_GET['action']) ? strtolower(trim((string) $_GET['action'])) : '';

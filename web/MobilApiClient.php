@@ -22,6 +22,8 @@ final class MobilApiClient
     private string $cacheDir;
     private string $stateFile;
     private string $inProgressCacheFile;
+    private string $caInfo;
+    private string $caPath;
     private ?string $bearerToken = null;
     private ?int $tokenExpiresAt = null;
     private array $lastHttpExchange = [];
@@ -56,8 +58,24 @@ final class MobilApiClient
 
         $this->stateFile = $this->cacheDir . DIRECTORY_SEPARATOR . 'fetch_state.json';
         $this->inProgressCacheFile = (string) ($options['inProgressCacheFile'] ?? ($this->cacheDir . DIRECTORY_SEPARATOR . 'in-progress-reports.json'));
+        $this->caInfo = trim((string) ($options['caInfo'] ?? ''));
+        $this->caPath = trim((string) ($options['caPath'] ?? ''));
 
         $this->ensureDirectory($this->cacheDir);
+    }
+
+    private function applySslOptions(array &$options): void
+    {
+        $options[CURLOPT_SSL_VERIFYPEER] = true;
+        $options[CURLOPT_SSL_VERIFYHOST] = 2;
+
+        if ($this->caInfo !== '' && is_file($this->caInfo) && is_readable($this->caInfo)) {
+            $options[CURLOPT_CAINFO] = $this->caInfo;
+        }
+
+        if ($this->caPath !== '' && is_dir($this->caPath)) {
+            $options[CURLOPT_CAPATH] = $this->caPath;
+        }
     }
 
     public function fetchCompletedReportsIncremental(): array
@@ -744,6 +762,8 @@ final class MobilApiClient
             $options[CURLOPT_HTTPHEADER] = $headers;
         }
 
+        $this->applySslOptions($options);
+
         curl_setopt_array($ch, $options);
 
         $raw = curl_exec($ch);
@@ -1130,6 +1150,8 @@ final class MobilApiClient
         if ($body !== null) {
             $options[CURLOPT_POSTFIELDS] = $body;
         }
+
+        $this->applySslOptions($options);
 
         curl_setopt_array($ch, $options);
         $raw = curl_exec($ch);

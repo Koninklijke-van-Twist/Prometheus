@@ -233,6 +233,201 @@ function buildPdfDownloadUrl(string $fileName, string $activeSource, ?int $selec
     return 'index.php?' . http_build_query($params);
 }
 
+function buildPdfPreviewUrl(string $fileName, string $activeSource, ?int $selectedYear): string
+{
+    $params = [
+        'bron' => $activeSource,
+        'preview_pdf' => $fileName,
+    ];
+
+    if ($selectedYear !== null) {
+        $params['jaar'] = (string) $selectedYear;
+    }
+
+    return 'index.php?' . http_build_query($params);
+}
+
+function resolvePdfFilePath(string $fileName, bool $isActivePdfSource, string $activeSourcePathResolved): ?string
+{
+    $safeName = basename(trim($fileName));
+    if (
+        $safeName === ''
+        || !preg_match('/\.pdf$/i', $safeName)
+        || !$isActivePdfSource
+        || $activeSourcePathResolved === ''
+    ) {
+        return null;
+    }
+
+    $sourceRoot = realpath($activeSourcePathResolved);
+    if ($sourceRoot === false || !is_dir($sourceRoot)) {
+        return null;
+    }
+
+    $candidatePath = $activeSourcePathResolved . DIRECTORY_SEPARATOR . $safeName;
+    $resolvedPath = realpath($candidatePath);
+    if (
+        $resolvedPath === false
+        || strncmp($resolvedPath, $sourceRoot, strlen($sourceRoot)) !== 0
+        || !is_file($resolvedPath)
+        || !is_readable($resolvedPath)
+    ) {
+        return null;
+    }
+
+    return $resolvedPath;
+}
+
+function normalizeWorkOrderLookupKey(string $workOrder): string
+{
+    return strtoupper(preg_replace('/\s+/', '', trim($workOrder)) ?? '');
+}
+
+function getWorkOrderLookupCandidates(string $workOrder): array
+{
+    $normalized = normalizeWorkOrderLookupKey($workOrder);
+    if ($normalized === '' || $normalized === '-') {
+        return [];
+    }
+
+    $candidates = [$normalized => true];
+    if (strpos($normalized, 'WO') === 0) {
+        $withoutPrefix = substr($normalized, 2);
+        if ($withoutPrefix !== '') {
+            $candidates[$withoutPrefix] = true;
+        }
+    } else {
+        $candidates['WO' . $normalized] = true;
+    }
+
+    return array_keys($candidates);
+}
+
+function getPdfWorkOrderComponentCachePath(): string
+{
+    return __DIR__ . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'pdf' . DIRECTORY_SEPARATOR . 'workorder-component.json';
+}
+
+function loadPdfWorkOrderComponentCache(): array
+{
+    $path = getPdfWorkOrderComponentCachePath();
+    if (!is_file($path) || !is_readable($path)) {
+        return ['entries' => []];
+    }
+
+    $raw = file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return ['entries' => []];
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return ['entries' => []];
+    }
+
+    if (!isset($decoded['entries']) || !is_array($decoded['entries'])) {
+        $decoded['entries'] = [];
+    }
+
+    return $decoded;
+}
+
+function savePdfWorkOrderComponentCache(array $cache): void
+{
+    $path = getPdfWorkOrderComponentCachePath();
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+
+    $payload = ['entries' => is_array($cache['entries'] ?? null) ? $cache['entries'] : []];
+    $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        return;
+    }
+
+    $tmp = $path . '.tmp';
+    file_put_contents($tmp, $json);
+    @rename($tmp, $path);
+}
+
+function fetchComponentNoFromBc(string $workOrder): string
+{
+    global $base;
+    global $auth;
+
+    $candidates = getWorkOrderLookupCandidates($workOrder);
+    if (empty($candidates)) {
+        return '';
+    }
+
+    $filterParts = [];
+    foreach ($candidates as $candidate) {
+        $escaped = str_replace("'", "''", $candidate);
+        $filterParts[] = "No eq '" . $escaped . "'";
+    }
+
+    if (empty($filterParts)) {
+        return '';
+    }
+
+    $query = implode(' or ', $filterParts);
+    $url = $base . 'AppWerkorders?$select=No,Component_No&$top=1&$filter=' . rawurlencode($query);
+    $rows = odata_get_all($url, $auth, 315360000);
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $componentNo = trim((string) ($row['Component_No'] ?? ''));
+        if ($componentNo !== '') {
+            return $componentNo;
+        }
+    }
+
+    return '';
+}
+
+function getCachedComponentNoForWorkOrder(string $workOrder): array
+{
+    $key = normalizeWorkOrderLookupKey($workOrder);
+    if ($key === '' || $key === '-') {
+        return ['found' => false, 'componentNo' => '', 'cache' => 'skip'];
+    }
+
+    $ttlSeconds = 315360000;
+    $now = time();
+    $cache = loadPdfWorkOrderComponentCache();
+    $entry = $cache['entries'][$key] ?? null;
+
+    if (is_array($entry)) {
+        $expiresAt = (int) ($entry['expires_at'] ?? 0);
+        if ($expiresAt > $now) {
+            $componentNo = trim((string) ($entry['component_no'] ?? ''));
+            return [
+                'found' => $componentNo !== '',
+                'componentNo' => $componentNo,
+                'cache' => 'hit',
+            ];
+        }
+    }
+
+    $componentNo = fetchComponentNoFromBc($workOrder);
+    $cache['entries'][$key] = [
+        'component_no' => $componentNo,
+        'cached_at' => $now,
+        'expires_at' => $now + $ttlSeconds,
+    ];
+    savePdfWorkOrderComponentCache($cache);
+
+    return [
+        'found' => $componentNo !== '',
+        'componentNo' => $componentNo,
+        'cache' => 'miss',
+    ];
+}
+
 function cardAccountTitle(array $item): string
 {
     $name = trim((string) ($item['accountName'] ?? ''));
@@ -403,6 +598,14 @@ function hasSuccessfulFetchTodayFromCache(): bool
 
 function buildMobilFetchUrl(): string
 {
+    $config = $GLOBALS['mobilApiAuth'] ?? [];
+    if (is_array($config)) {
+        $internalUrl = trim((string) ($config['internalFetchUrl'] ?? ''));
+        if ($internalUrl !== '') {
+            return $internalUrl;
+        }
+    }
+
     $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/web/index.php');
     $scriptDir = str_replace('\\', '/', dirname($scriptName));
     $scriptDir = rtrim($scriptDir, '/');
@@ -419,6 +622,14 @@ function buildMobilFetchUrl(): string
 
 function executeFetchAction(string $url): array
 {
+    $mobilConfig = $GLOBALS['mobilApiAuth'] ?? [];
+    if (!is_array($mobilConfig)) {
+        $mobilConfig = [];
+    }
+
+    $caInfo = trim((string) ($mobilConfig['caInfo'] ?? ''));
+    $caPath = trim((string) ($mobilConfig['caPath'] ?? ''));
+
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -428,6 +639,14 @@ function executeFetchAction(string $url): array
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
         curl_setopt($ch, CURLOPT_TIMEOUT, 300);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+        if ($caInfo !== '' && is_file($caInfo) && is_readable($caInfo)) {
+            curl_setopt($ch, CURLOPT_CAINFO, $caInfo);
+        }
+        if ($caPath !== '' && is_dir($caPath)) {
+            curl_setopt($ch, CURLOPT_CAPATH, $caPath);
+        }
         $responseBody = curl_exec($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
@@ -484,6 +703,12 @@ function executeFetchAction(string $url): array
             'method' => 'GET',
             'timeout' => 300,
             'ignore_errors' => true,
+        ],
+        'ssl' => [
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+            'cafile' => ($caInfo !== '' && is_file($caInfo) && is_readable($caInfo)) ? $caInfo : null,
+            'capath' => ($caPath !== '' && is_dir($caPath)) ? $caPath : null,
         ],
     ]);
     $responseBody = @file_get_contents($url, false, $context);
@@ -676,21 +901,62 @@ $isActiveJsonSource = $activeSourceType === 'json';
 $isActivePdfSource = $activeSourceType === 'pdf';
 $isActiveMobilSource = isMobilSource($activeSourceDefinition);
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && strtolower(trim((string) $_GET['action'])) === 'pdf_component_lookup') {
+    $workOrder = trim((string) ($_GET['work_order'] ?? ''));
+    if ($workOrder === '' || $workOrder === '-') {
+        http_response_code(400);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['ok' => false, 'message' => 'Werkordernummer ontbreekt.']);
+        exit;
+    }
+
+    try {
+        $componentResult = getCachedComponentNoForWorkOrder($workOrder);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok' => true,
+            'workOrder' => $workOrder,
+            'componentNo' => (string) ($componentResult['componentNo'] ?? ''),
+            'found' => !empty($componentResult['found']),
+            'cache' => (string) ($componentResult['cache'] ?? 'miss'),
+        ]);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok' => false,
+            'message' => $e->getMessage(),
+            'workOrder' => $workOrder,
+        ]);
+        exit;
+    }
+}
+
+if (isset($_GET['preview_pdf']) && is_string($_GET['preview_pdf'])) {
+    $fileName = basename(trim($_GET['preview_pdf']));
+    $resolvedPath = resolvePdfFilePath($fileName, $isActivePdfSource, $activeSourcePathResolved);
+
+    if ($resolvedPath === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'PDF niet gevonden.';
+        exit;
+    }
+
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="' . rawurlencode($fileName) . '"');
+    header('Content-Length: ' . (string) filesize($resolvedPath));
+
+    readfile($resolvedPath);
+    exit;
+}
+
 if (isset($_GET['download_pdf']) && is_string($_GET['download_pdf'])) {
     $fileName = basename(trim($_GET['download_pdf']));
-    $sourceRoot = $isActivePdfSource ? realpath($activeSourcePathResolved) : false;
-    $candidatePath = ($isActivePdfSource && $activeSourcePathResolved !== '') ? $activeSourcePathResolved . DIRECTORY_SEPARATOR . $fileName : '';
-    $resolvedPath = $candidatePath !== '' ? realpath($candidatePath) : false;
+    $resolvedPath = resolvePdfFilePath($fileName, $isActivePdfSource, $activeSourcePathResolved);
 
-    $isValidPdf = $fileName !== ''
-        && preg_match('/\.pdf$/i', $fileName)
-        && $sourceRoot !== false
-        && $resolvedPath !== false
-        && strncmp($resolvedPath, $sourceRoot, strlen($sourceRoot)) === 0
-        && is_file($resolvedPath)
-        && is_readable($resolvedPath);
-
-    if (!$isValidPdf) {
+    if ($resolvedPath === null) {
         http_response_code(404);
         header('Content-Type: text/plain; charset=utf-8');
         echo 'PDF niet gevonden.';
@@ -1443,6 +1709,91 @@ $ui = [
             word-break: break-word;
         }
 
+        .pdf-preview-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 1200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            background: rgba(8, 18, 29, 0.74);
+        }
+
+        .pdf-preview-modal.is-open {
+            display: flex;
+        }
+
+        .pdf-preview-shell {
+            width: min(1480px, 100%);
+            height: min(95vh, 980px);
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .pdf-preview-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--line);
+            background: #f7fbff;
+        }
+
+        .pdf-preview-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--ink);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .pdf-preview-close {
+            border: 1px solid var(--line);
+            background: #fff;
+            color: var(--ink);
+            border-radius: 8px;
+            padding: 6px 10px;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .pdf-preview-frame {
+            width: 100%;
+            flex: 1;
+            border: 0;
+            background: #f0f3f7;
+        }
+
+        .pdf-preview-foot {
+            border-top: 1px solid var(--line);
+            background: #fff;
+            padding: 12px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .pdf-preview-download {
+            display: inline-block;
+            text-decoration: none;
+            border-radius: 999px;
+            padding: 10px 18px;
+            font-weight: 700;
+            border: 1px solid var(--brand);
+            background: var(--brand);
+            color: #fff;
+        }
+
+        .pdf-preview-download:hover {
+            filter: brightness(1.06);
+        }
+
         .hidden {
             display: none !important;
         }
@@ -1818,13 +2169,19 @@ $ui = [
                             <?php foreach ($group['items'] as $item): ?>
                                 <?php $sampleType = sampleTypeMeta((string) ($item['sampleType'] ?? '')); ?>
                                 <?php $searchPayload = pdfCardSearchPayload($item, $headerDate); ?>
+                                <?php $downloadUrl = buildPdfDownloadUrl((string) ($item['file'] ?? ''), $activeSource, $selectedYear); ?>
+                                <?php $previewUrl = buildPdfPreviewUrl((string) ($item['file'] ?? ''), $activeSource, $selectedYear); ?>
                                 <?php
                                 $readKey = 'pdf:' . basename((string) ($item['file'] ?? ''));
                                 $isUnread = $currentUserEmail !== '' && !isset($readStatus[$readKey]);
+                                $workOrderValue = trim((string) ($item['workOrder'] ?? ''));
+                                $hasWorkOrder = $workOrderValue !== '' && $workOrderValue !== '-';
                                 ?>
                                 <a class="card<?= $isUnread ? ' is-unread' : '' ?>" data-filter-card="1"
                                     data-read-key="<?= htmlspecialchars($readKey, ENT_QUOTES, 'UTF-8') ?>"
-                                    href="<?= htmlspecialchars(buildPdfDownloadUrl((string) ($item['file'] ?? ''), $activeSource, $selectedYear), ENT_QUOTES, 'UTF-8') ?>"
+                                    href="<?= htmlspecialchars($previewUrl, ENT_QUOTES, 'UTF-8') ?>" data-pdf-preview="1"
+                                    data-preview-url="<?= htmlspecialchars($previewUrl, ENT_QUOTES, 'UTF-8') ?>"
+                                    data-download-url="<?= htmlspecialchars($downloadUrl, ENT_QUOTES, 'UTF-8') ?>"
                                     data-status="<?= htmlspecialchars((string) ($item['sampleTypeKey'] ?? '__unknown__'), ENT_QUOTES, 'UTF-8') ?>"
                                     data-action-required="0" data-search="<?= htmlspecialchars($searchPayload, ENT_QUOTES, 'UTF-8') ?>"
                                     style="--card-top-accent: <?= htmlspecialchars((string) ($sampleType['accentColor'] ?? uiColor('sampleTypeUnknownBorder', '#c8d4d6')), ENT_QUOTES, 'UTF-8') ?>;">
@@ -1844,10 +2201,16 @@ $ui = [
                                     <div class="row">Werkordernummer:
                                         <?= htmlspecialchars((string) ($item['workOrder'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                     </div>
+                                    <div class="row">Componentnummer:
+                                        <span class="js-pdf-component"
+                                            data-work-order="<?= htmlspecialchars($workOrderValue, ENT_QUOTES, 'UTF-8') ?>">
+                                            <?= $hasWorkOrder ? 'Laden...' : '-' ?>
+                                        </span>
+                                    </div>
                                     <div class="row">Datum:
                                         <?= htmlspecialchars((string) ($item['dateDisplay'] ?? '-'), ENT_QUOTES, 'UTF-8') ?>
                                     </div>
-                                    <div class="card-download-note">Klik om PDF te downloaden</div>
+                                    <div class="card-download-note">Klik om PDF te openen</div>
                                 </a>
                             <?php endforeach; ?>
                         </div>
@@ -1855,6 +2218,18 @@ $ui = [
                 <?php endforeach; ?>
             <?php endif; ?>
         <?php endif; ?>
+    </div>
+    <div class="pdf-preview-modal" id="pdfPreviewModal" aria-hidden="true">
+        <div class="pdf-preview-shell" role="dialog" aria-modal="true" aria-labelledby="pdfPreviewTitle">
+            <div class="pdf-preview-head">
+                <div class="pdf-preview-title" id="pdfPreviewTitle">PDF preview</div>
+                <button type="button" class="pdf-preview-close" id="closePdfPreviewModal">Sluiten</button>
+            </div>
+            <iframe class="pdf-preview-frame" id="pdfPreviewFrame" title="PDF preview"></iframe>
+            <div class="pdf-preview-foot">
+                <a class="pdf-preview-download" id="pdfPreviewDownloadButton" href="#" download>Download PDF</a>
+            </div>
+        </div>
     </div>
     <script>
         (function ()
@@ -1867,6 +2242,11 @@ $ui = [
             const openFetchResponseModalButton = document.getElementById('openFetchResponseModal');
             const fetchResponseModal = document.getElementById('fetchResponseModal');
             const closeFetchResponseModalButton = document.getElementById('closeFetchResponseModal');
+            const pdfPreviewModal = document.getElementById('pdfPreviewModal');
+            const pdfPreviewFrame = document.getElementById('pdfPreviewFrame');
+            const pdfPreviewTitle = document.getElementById('pdfPreviewTitle');
+            const closePdfPreviewModalButton = document.getElementById('closePdfPreviewModal');
+            const pdfPreviewDownloadButton = document.getElementById('pdfPreviewDownloadButton');
 
             const openFetchModal = function ()
             {
@@ -1888,6 +2268,43 @@ $ui = [
 
                 fetchResponseModal.classList.remove('is-open');
                 fetchResponseModal.setAttribute('aria-hidden', 'true');
+            };
+
+            const openPdfPreview = function (previewUrl, downloadUrl, title)
+            {
+                if (!pdfPreviewModal || !pdfPreviewFrame || !pdfPreviewDownloadButton)
+                {
+                    return;
+                }
+
+                if (!previewUrl)
+                {
+                    return;
+                }
+
+                pdfPreviewFrame.setAttribute('src', previewUrl);
+                pdfPreviewDownloadButton.setAttribute('href', downloadUrl || previewUrl);
+                if (pdfPreviewTitle)
+                {
+                    pdfPreviewTitle.textContent = title || 'PDF preview';
+                }
+
+                document.body.style.overflow = 'hidden';
+                pdfPreviewModal.classList.add('is-open');
+                pdfPreviewModal.setAttribute('aria-hidden', 'false');
+            };
+
+            const closePdfPreview = function ()
+            {
+                if (!pdfPreviewModal || !pdfPreviewFrame)
+                {
+                    return;
+                }
+
+                pdfPreviewModal.classList.remove('is-open');
+                pdfPreviewModal.setAttribute('aria-hidden', 'true');
+                pdfPreviewFrame.setAttribute('src', 'about:blank');
+                document.body.style.overflow = '';
             };
 
             if (openFetchResponseModalButton)
@@ -1916,8 +2333,57 @@ $ui = [
                     {
                         closeFetchModal();
                     }
+
+                    if (event.key === 'Escape' && pdfPreviewModal && pdfPreviewModal.classList.contains('is-open'))
+                    {
+                        closePdfPreview();
+                    }
                 });
             }
+
+            if (closePdfPreviewModalButton)
+            {
+                closePdfPreviewModalButton.addEventListener('click', closePdfPreview);
+            }
+
+            if (pdfPreviewModal)
+            {
+                pdfPreviewModal.addEventListener('click', function (event)
+                {
+                    if (event.target === pdfPreviewModal)
+                    {
+                        closePdfPreview();
+                    }
+                });
+            }
+
+            const openPdfPreviewFromCard = function (card)
+            {
+                if (!card)
+                {
+                    return;
+                }
+
+                const previewUrl = card.dataset.previewUrl || card.getAttribute('href') || '';
+                const downloadUrl = card.dataset.downloadUrl || '';
+                const titleEl = card.querySelector('.cardTitle');
+                const title = titleEl ? titleEl.textContent.trim() : 'PDF preview';
+                openPdfPreview(previewUrl, downloadUrl, title);
+            };
+
+            document.querySelectorAll('.card[data-pdf-preview="1"]').forEach(function (card)
+            {
+                card.addEventListener('click', function (e)
+                {
+                    if (e.defaultPrevented)
+                    {
+                        return;
+                    }
+
+                    e.preventDefault();
+                    openPdfPreviewFromCard(card);
+                });
+            });
 
             if (cards.length === 0)
             {
@@ -2033,6 +2499,16 @@ $ui = [
                         return;
                     }
 
+                    const isPdfPreview = card.dataset.pdfPreview === '1';
+                    if (isPdfPreview)
+                    {
+                        e.preventDefault();
+                        removeUnreadDot(card);
+                        sendMarkRead([readKey]);
+                        openPdfPreviewFromCard(card);
+                        return;
+                    }
+
                     const isDownload = href.indexOf('download_pdf=') !== -1;
 
                     if (isDownload)
@@ -2054,6 +2530,84 @@ $ui = [
                     }
                 });
             });
+
+            const pdfComponentNodes = Array.from(document.querySelectorAll('.js-pdf-component[data-work-order]')).filter(function (node)
+            {
+                const workOrder = (node.dataset.workOrder || '').trim();
+                return workOrder !== '' && workOrder !== '-';
+            });
+
+            const applyComponentValueToNode = function (node, componentNo)
+            {
+                const value = (componentNo || '').trim() !== '' ? componentNo.trim() : '-';
+                node.textContent = value;
+
+                const card = node.closest('.card[data-filter-card="1"]');
+                if (card && value !== '-')
+                {
+                    const baseSearch = (card.dataset.search || '').toLowerCase();
+                    if (baseSearch.indexOf(value.toLowerCase()) === -1)
+                    {
+                        card.dataset.search = (baseSearch + ' ' + value.toLowerCase()).trim();
+                    }
+                }
+            };
+
+            const workOrderNodeMap = new Map();
+            pdfComponentNodes.forEach(function (node)
+            {
+                const workOrder = (node.dataset.workOrder || '').trim();
+                if (!workOrderNodeMap.has(workOrder))
+                {
+                    workOrderNodeMap.set(workOrder, []);
+                }
+                workOrderNodeMap.get(workOrder).push(node);
+            });
+
+            const workOrdersQueue = Array.from(workOrderNodeMap.keys());
+            let queueIndex = 0;
+
+            const loadNextPdfComponent = function ()
+            {
+                if (queueIndex >= workOrdersQueue.length)
+                {
+                    return;
+                }
+
+                const workOrder = workOrdersQueue[queueIndex++];
+                fetch('index.php?action=pdf_component_lookup&work_order=' + encodeURIComponent(workOrder), {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                }).then(function (response)
+                {
+                    if (!response.ok)
+                    {
+                        return null;
+                    }
+
+                    return response.json();
+                }).then(function (payload)
+                {
+                    const nodes = workOrderNodeMap.get(workOrder) || [];
+                    const componentNo = payload && payload.ok ? String(payload.componentNo || '') : '';
+                    nodes.forEach(function (node)
+                    {
+                        applyComponentValueToNode(node, componentNo);
+                    });
+                }).catch(function ()
+                {
+                    const nodes = workOrderNodeMap.get(workOrder) || [];
+                    nodes.forEach(function (node)
+                    {
+                        applyComponentValueToNode(node, '');
+                    });
+                }).finally(function ()
+                {
+                    loadNextPdfComponent();
+                });
+            };
+
+            loadNextPdfComponent();
 
             const pulseDot = function (card)
             {
