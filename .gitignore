@@ -8,3 +8,6 @@ web/feestdagen/
 MLA API Collection.postman_collection.json
 
 Mobil API.txt
+
+web/analytics/analytics.sqlite
+web/analytics/analytics.sqlite-*
