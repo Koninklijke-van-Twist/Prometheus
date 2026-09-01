@@ -69,13 +69,43 @@ final class MobilApiClient
         $options[CURLOPT_SSL_VERIFYPEER] = true;
         $options[CURLOPT_SSL_VERIFYHOST] = 2;
 
-        if ($this->caInfo !== '' && is_file($this->caInfo) && is_readable($this->caInfo)) {
-            $options[CURLOPT_CAINFO] = $this->caInfo;
+        $caInfo = $this->resolveCaInfoPath();
+        if ($caInfo !== '') {
+            $options[CURLOPT_CAINFO] = $caInfo;
         }
 
         if ($this->caPath !== '' && is_dir($this->caPath)) {
             $options[CURLOPT_CAPATH] = $this->caPath;
         }
+
+        $hasExplicitCa = $caInfo !== '' || ($this->caPath !== '' && is_dir($this->caPath));
+        if (!$hasExplicitCa && defined('CURLSSLOPT_NATIVE_CA')) {
+            $existing = (int) ($options[CURLOPT_SSL_OPTIONS] ?? 0);
+            $options[CURLOPT_SSL_OPTIONS] = $existing | CURLSSLOPT_NATIVE_CA;
+        }
+    }
+
+    private function resolveCaInfoPath(): string
+    {
+        $candidates = [
+            $this->caInfo,
+            trim((string) ini_get('curl.cainfo')),
+            trim((string) ini_get('openssl.cafile')),
+            __DIR__ . DIRECTORY_SEPARATOR . 'certs' . DIRECTORY_SEPARATOR . 'cacert.pem',
+            'C:\\xampp\\apache\\bin\\curl-ca-bundle.crt',
+            'C:\\xampp\\php\\extras\\ssl\\cacert.pem',
+            '/etc/ssl/certs/ca-certificates.crt',
+            '/etc/pki/tls/certs/ca-bundle.crt',
+        ];
+
+        foreach ($candidates as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate !== '' && is_file($candidate) && is_readable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return '';
     }
 
     public function fetchCompletedReportsIncremental(): array

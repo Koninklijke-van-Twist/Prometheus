@@ -620,8 +620,95 @@ function buildMobilFetchUrl(): string
     return $scheme . '://' . $host . $basePath . '/mobilapi.php?action=fetch';
 }
 
+function buildMobilApiClientOptions(): array
+{
+    $mobilConfig = $GLOBALS['mobilApiAuth'] ?? [];
+    if (!is_array($mobilConfig)) {
+        $mobilConfig = [];
+    }
+
+    $options = [
+        'environment' => (string) ($mobilConfig['environment'] ?? 'prd'),
+        'authEnvironment' => (string) ($mobilConfig['authEnvironment'] ?? 'acc'),
+        'authMode' => (string) ($mobilConfig['authMode'] ?? 'username'),
+        'username' => (string) ($mobilConfig['username'] ?? ''),
+        'password' => (string) ($mobilConfig['password'] ?? ''),
+        'apiKey' => (string) ($mobilConfig['apiKey'] ?? ''),
+        'authEmail' => (string) ($mobilConfig['authEmail'] ?? ''),
+        'authUserId' => (string) ($mobilConfig['authUserId'] ?? ''),
+    ];
+
+    foreach (['inProgressCacheFile', 'cacheDir', 'caInfo', 'caPath'] as $key) {
+        $value = trim((string) ($mobilConfig[$key] ?? ''));
+        if ($value !== '') {
+            $options[$key] = $value;
+        }
+    }
+
+    return $options;
+}
+
+function executeInProcessMobilFetch(): array
+{
+    require_once __DIR__ . '/MobilApiClient.php';
+
+    try {
+        @ini_set('max_execution_time', '1800');
+        @set_time_limit(1800);
+
+        $client = new MobilApiClient(buildMobilApiClientOptions());
+        $result = $client->fetchCompletedReportsIncremental();
+        $encoded = json_encode($result, JSON_UNESCAPED_UNICODE);
+        if (!is_string($encoded)) {
+            $encoded = '{}';
+        }
+
+        $status = strtolower(trim((string) ($result['status'] ?? '')));
+        if ($status !== '' && $status !== 'ok') {
+            return [
+                'ok' => false,
+                'message' => (string) ($result['message'] ?? 'Onbekende fout bij fetch.'),
+                'httpCode' => 500,
+                'responseBody' => $encoded,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'message' => 'Dagelijkse fetch uitgevoerd.',
+            'httpCode' => 200,
+            'responseBody' => $encoded,
+        ];
+    } catch (Throwable $e) {
+        return [
+            'ok' => false,
+            'message' => 'Fetch-call mislukt: ' . $e->getMessage(),
+            'httpCode' => 0,
+            'responseBody' => '',
+        ];
+    }
+}
+
+function isLoopbackFetchUrl(string $url): bool
+{
+    $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+    if ($host === '') {
+        return false;
+    }
+
+    $requestHost = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
+    $requestHost = explode(':', $requestHost)[0];
+
+    return in_array($host, ['127.0.0.1', 'localhost', '::1'], true)
+        || ($requestHost !== '' && $host === $requestHost);
+}
+
 function executeFetchAction(string $url): array
 {
+    if (is_file(__DIR__ . DIRECTORY_SEPARATOR . 'MobilApiClient.php')) {
+        return executeInProcessMobilFetch();
+    }
+
     $mobilConfig = $GLOBALS['mobilApiAuth'] ?? [];
     if (!is_array($mobilConfig)) {
         $mobilConfig = [];
@@ -629,6 +716,7 @@ function executeFetchAction(string $url): array
 
     $caInfo = trim((string) ($mobilConfig['caInfo'] ?? ''));
     $caPath = trim((string) ($mobilConfig['caPath'] ?? ''));
+    $isLoopback = isLoopbackFetchUrl($url);
 
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
@@ -639,13 +727,21 @@ function executeFetchAction(string $url): array
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
         curl_setopt($ch, CURLOPT_TIMEOUT, 300);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        if ($caInfo !== '' && is_file($caInfo) && is_readable($caInfo)) {
-            curl_setopt($ch, CURLOPT_CAINFO, $caInfo);
-        }
-        if ($caPath !== '' && is_dir($caPath)) {
-            curl_setopt($ch, CURLOPT_CAPATH, $caPath);
+        if ($isLoopback) {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        } else {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+            if ($caInfo !== '' && is_file($caInfo) && is_readable($caInfo)) {
+                curl_setopt($ch, CURLOPT_CAINFO, $caInfo);
+            }
+            if ($caPath !== '' && is_dir($caPath)) {
+                curl_setopt($ch, CURLOPT_CAPATH, $caPath);
+            }
+            if (defined('CURLSSLOPT_NATIVE_CA')) {
+                curl_setopt($ch, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+            }
         }
         $responseBody = curl_exec($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -705,8 +801,8 @@ function executeFetchAction(string $url): array
             'ignore_errors' => true,
         ],
         'ssl' => [
-            'verify_peer' => true,
-            'verify_peer_name' => true,
+            'verify_peer' => !$isLoopback,
+            'verify_peer_name' => !$isLoopback,
             'cafile' => ($caInfo !== '' && is_file($caInfo) && is_readable($caInfo)) ? $caInfo : null,
             'capath' => ($caPath !== '' && is_dir($caPath)) ? $caPath : null,
         ],
@@ -1338,6 +1434,88 @@ $ui = [
             color: var(--brand);
         }
 
+        .page-size-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .page-size-control select {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 6px 10px;
+            background: var(--card);
+            color: var(--ink);
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .page-size-control select:hover {
+            border-color: var(--brand);
+            color: var(--brand);
+        }
+
+        .pagination-bar {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .pagination-bar[hidden] {
+            display: none !important;
+        }
+
+        .pagination-info {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .pagination-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .pagination-btn {
+            border: 1px solid var(--line);
+            background: var(--card);
+            border-radius: 999px;
+            min-width: 36px;
+            padding: 6px 11px;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--ink);
+            cursor: pointer;
+        }
+
+        .pagination-btn:hover:not(:disabled):not(.is-active) {
+            background: var(--brand-soft);
+            border-color: var(--brand);
+            color: var(--brand);
+        }
+
+        .pagination-btn.is-active {
+            background: var(--brand);
+            border-color: var(--brand);
+            color: #fff;
+            cursor: default;
+        }
+
+        .pagination-btn:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
         .source-tab {
             display: inline-flex;
             align-items: center;
@@ -1889,13 +2067,21 @@ $ui = [
                     <small><?= htmlspecialchars((string) $sourceTab['fileType'], ENT_QUOTES, 'UTF-8') ?></small>
                 </a>
             <?php endforeach; ?>
-            <?php if ($currentUserEmail !== ''): ?>
-                <div class="source-tabs-actions">
+            <div class="source-tabs-actions">
+                <label class="page-size-control" for="pageSizeSelect">Per pagina</label>
+                <select id="pageSizeSelect" aria-label="Aantal resultaten per pagina">
+                    <?php foreach ([10, 25, 50, 100, 200, 300] as $pageSizeOption): ?>
+                        <option value="<?= (int) $pageSizeOption ?>" <?= $pageSizeOption === 50 ? 'selected' : '' ?>>
+                            <?= (int) $pageSizeOption ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <?php if ($currentUserEmail !== ''): ?>
                     <button type="button" class="source-action-btn" id="scrollToFirstUnread">Ga naar eerste
                         ongelezen</button>
                     <button type="button" class="source-action-btn" id="markAllRead">Markeer alles als gelezen</button>
-                </div>
-            <?php endif; ?>
+                <?php endif; ?>
+            </div>
         </nav>
 
         <?php if ($isActiveMobilSource && $dailyFetchWarning !== ''): ?>
@@ -2218,6 +2404,10 @@ $ui = [
                 <?php endforeach; ?>
             <?php endif; ?>
         <?php endif; ?>
+        <nav class="pagination-bar" id="resultsPagination" hidden>
+            <div class="pagination-info" id="paginationInfo"></div>
+            <div class="pagination-buttons" id="paginationButtons"></div>
+        </nav>
     </div>
     <div class="pdf-preview-modal" id="pdfPreviewModal" aria-hidden="true">
         <div class="pdf-preview-shell" role="dialog" aria-modal="true" aria-labelledby="pdfPreviewTitle">
@@ -2247,6 +2437,30 @@ $ui = [
             const pdfPreviewTitle = document.getElementById('pdfPreviewTitle');
             const closePdfPreviewModalButton = document.getElementById('closePdfPreviewModal');
             const pdfPreviewDownloadButton = document.getElementById('pdfPreviewDownloadButton');
+            const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200, 300];
+            const DEFAULT_PAGE_SIZE = 50;
+            const PAGE_SIZE_STORAGE_KEY = 'prometheus.overviewPageSize';
+            const pageSizeSelect = document.getElementById('pageSizeSelect');
+
+            const readStoredPageSize = function ()
+            {
+                try
+                {
+                    const parsed = parseInt(window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY) || '', 10);
+                    if (PAGE_SIZE_OPTIONS.indexOf(parsed) !== -1)
+                    {
+                        return parsed;
+                    }
+                }
+                catch (e) { }
+
+                return DEFAULT_PAGE_SIZE;
+            };
+
+            if (pageSizeSelect)
+            {
+                pageSizeSelect.value = String(readStoredPageSize());
+            }
 
             const openFetchModal = function ()
             {
@@ -2390,7 +2604,27 @@ $ui = [
                 return;
             }
 
-            const applyFilters = function ()
+            const paginationBar = document.getElementById('resultsPagination');
+            const paginationInfo = document.getElementById('paginationInfo');
+            const paginationButtons = document.getElementById('paginationButtons');
+            let currentPage = 1;
+
+            const storePageSize = function (pageSize)
+            {
+                try
+                {
+                    window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(pageSize));
+                }
+                catch (e) { }
+            };
+
+            const getPageSize = function ()
+            {
+                const parsed = pageSizeSelect ? parseInt(pageSizeSelect.value, 10) : DEFAULT_PAGE_SIZE;
+                return PAGE_SIZE_OPTIONS.indexOf(parsed) !== -1 ? parsed : DEFAULT_PAGE_SIZE;
+            };
+
+            const cardMatchesFilters = function (card)
             {
                 const activeStatuses = new Set(
                     statusCheckboxes.filter(function (checkbox)
@@ -2403,17 +2637,143 @@ $ui = [
                 );
                 const actionOnly = actionOnlyCheckbox ? actionOnlyCheckbox.checked : false;
                 const needle = searchInput ? searchInput.value.trim().toLowerCase() : '';
+                const status = card.dataset.status || '__unknown__';
+                const isInProgress = card.dataset.inProgress === '1';
+                const hasActionRequired = card.dataset.actionRequired === '1';
+                const statusVisible = isInProgress || statusCheckboxes.length === 0 ? true : activeStatuses.has(status);
+                const actionVisible = !actionOnly || hasActionRequired;
+                const haystack = (card.dataset.search || '').toLowerCase();
+                const searchVisible = needle === '' || haystack.indexOf(needle) !== -1;
+
+                return statusVisible && actionVisible && searchVisible;
+            };
+
+            const matchingCards = function ()
+            {
+                return cards.filter(cardMatchesFilters);
+            };
+
+            const buildPageList = function (current, total)
+            {
+                if (total <= 9)
+                {
+                    return Array.from({ length: total }, function (_, index) { return index + 1; });
+                }
+
+                const pages = [1];
+                const start = Math.max(2, current - 2);
+                const end = Math.min(total - 1, current + 2);
+                if (start > 2)
+                {
+                    pages.push('ellipsis');
+                }
+                for (let page = start; page <= end; page++)
+                {
+                    pages.push(page);
+                }
+                if (end < total - 1)
+                {
+                    pages.push('ellipsis');
+                }
+                pages.push(total);
+                return pages;
+            };
+
+            const renderPagination = function (matchCount)
+            {
+                if (!paginationBar || !paginationInfo || !paginationButtons)
+                {
+                    return;
+                }
+
+                const pageSize = getPageSize();
+                const totalPages = Math.max(1, Math.ceil(matchCount / pageSize) || 1);
+                const start = matchCount === 0 ? 0 : ((currentPage - 1) * pageSize) + 1;
+                const end = Math.min(matchCount, currentPage * pageSize);
+
+                if (matchCount === 0)
+                {
+                    paginationInfo.textContent = 'Geen resultaten';
+                }
+                else
+                {
+                    paginationInfo.textContent = 'Toont ' + start + '\u2013' + end + ' van ' + matchCount;
+                }
+
+                paginationButtons.replaceChildren();
+
+                const addButton = function (label, page, options)
+                {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'pagination-btn';
+                    button.textContent = label;
+                    if (options && options.active)
+                    {
+                        button.classList.add('is-active');
+                        button.setAttribute('aria-current', 'page');
+                    }
+                    if (options && options.disabled)
+                    {
+                        button.disabled = true;
+                    }
+                    if (typeof page === 'number' && !(options && (options.active || options.disabled)))
+                    {
+                        button.addEventListener('click', function ()
+                        {
+                            currentPage = page;
+                            applyFiltersAndPagination(false);
+                            const firstVisible = document.querySelector('.card[data-status]:not(.hidden)');
+                            if (firstVisible)
+                            {
+                                firstVisible.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }
+                        });
+                    }
+                    paginationButtons.appendChild(button);
+                };
+
+                addButton('Vorige', currentPage - 1, { disabled: currentPage <= 1 });
+                buildPageList(currentPage, totalPages).forEach(function (page)
+                {
+                    if (page === 'ellipsis')
+                    {
+                        const spacer = document.createElement('span');
+                        spacer.className = 'pagination-info';
+                        spacer.textContent = '\u2026';
+                        paginationButtons.appendChild(spacer);
+                        return;
+                    }
+
+                    addButton(String(page), page, { active: page === currentPage });
+                });
+                addButton('Volgende', currentPage + 1, { disabled: currentPage >= totalPages || matchCount === 0 });
+
+                paginationBar.hidden = matchCount <= pageSize && currentPage === 1;
+            };
+
+            const applyFiltersAndPagination = function (resetPage)
+            {
+                const matches = matchingCards();
+                if (resetPage)
+                {
+                    currentPage = 1;
+                }
+
+                const pageSize = getPageSize();
+                const totalPages = Math.max(1, Math.ceil(matches.length / pageSize) || 1);
+                if (currentPage > totalPages)
+                {
+                    currentPage = totalPages;
+                }
+
+                const start = (currentPage - 1) * pageSize;
+                const end = start + pageSize;
+                const onPage = new Set(matches.slice(start, end));
 
                 cards.forEach(function (card)
                 {
-                    const status = card.dataset.status || '__unknown__';
-                    const isInProgress = card.dataset.inProgress === '1';
-                    const hasActionRequired = card.dataset.actionRequired === '1';
-                    const statusVisible = isInProgress || statusCheckboxes.length === 0 ? true : activeStatuses.has(status);
-                    const actionVisible = !actionOnly || hasActionRequired;
-                    const haystack = (card.dataset.search || '').toLowerCase();
-                    const searchVisible = needle === '' || haystack.indexOf(needle) !== -1;
-                    card.classList.toggle('hidden', !(statusVisible && actionVisible && searchVisible));
+                    card.classList.toggle('hidden', !onPage.has(card));
                 });
 
                 groups.forEach(function (group)
@@ -2434,24 +2794,35 @@ $ui = [
 
                     group.classList.toggle('hidden', visibleInGroup === 0);
                 });
+
+                renderPagination(matches.length);
             };
 
             statusCheckboxes.forEach(function (checkbox)
             {
-                checkbox.addEventListener('change', applyFilters);
+                checkbox.addEventListener('change', function () { applyFiltersAndPagination(true); });
             });
 
             if (actionOnlyCheckbox)
             {
-                actionOnlyCheckbox.addEventListener('change', applyFilters);
+                actionOnlyCheckbox.addEventListener('change', function () { applyFiltersAndPagination(true); });
             }
 
             if (searchInput)
             {
-                searchInput.addEventListener('input', applyFilters);
+                searchInput.addEventListener('input', function () { applyFiltersAndPagination(true); });
             }
 
-            applyFilters();
+            if (pageSizeSelect)
+            {
+                pageSizeSelect.addEventListener('change', function ()
+                {
+                    storePageSize(getPageSize());
+                    applyFiltersAndPagination(true);
+                });
+            }
+
+            applyFiltersAndPagination(true);
 
             // Ongelezen samples
             const markReadUrl = 'index.php';
@@ -2642,13 +3013,27 @@ $ui = [
             {
                 scrollToFirstUnreadBtn.addEventListener('click', function ()
                 {
-                    const firstUnread = document.querySelector('.card.is-unread:not(.hidden)');
-                    if (firstUnread)
+                    const matches = matchingCards();
+                    const firstUnread = matches.find(function (card)
                     {
-                        firstUnread.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        // Slight delay so the pulse starts when the card is in view.
-                        setTimeout(function () { pulseDot(firstUnread); }, 400);
+                        return card.classList.contains('is-unread');
+                    });
+                    if (!firstUnread)
+                    {
+                        return;
                     }
+
+                    const index = matches.indexOf(firstUnread);
+                    const pageSize = getPageSize();
+                    const targetPage = Math.floor(index / pageSize) + 1;
+                    if (targetPage !== currentPage)
+                    {
+                        currentPage = targetPage;
+                        applyFiltersAndPagination(false);
+                    }
+
+                    firstUnread.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    setTimeout(function () { pulseDot(firstUnread); }, 400);
                 });
             }
 
