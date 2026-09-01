@@ -1680,18 +1680,21 @@ $ui = [
 
         .card-head {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
             gap: 8px;
             margin-bottom: 8px;
+            min-width: 0;
         }
 
         .sample-title {
             display: flex;
-            max-width: 75%;
+            flex: 1 1 0;
+            min-width: 0;
             flex-direction: column;
             align-items: flex-start;
             gap: 2px;
+            overflow: hidden;
         }
 
         .cardTitle {
@@ -1748,9 +1751,18 @@ $ui = [
 
         .chip-stack {
             display: flex;
-            flex-direction: row;
-            gap: 6px;
+            flex: 0 0 auto;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 4px;
             align-items: center;
+            max-width: calc(100% - 3.5rem);
+        }
+
+        .chip-stack .chip {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .chip-action {
