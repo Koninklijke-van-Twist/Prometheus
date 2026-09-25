@@ -372,8 +372,17 @@ function fetchComponentNoFromBc(string $workOrder): string
     }
 
     $query = implode(' or ', $filterParts);
-    $url = $base . 'AppWerkorders?$select=No,Component_No&$top=1&$filter=' . rawurlencode($query);
-    $rows = odata_get_all($url, $auth, 315360000);
+    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
+        // Lege BC-credentials zijn geldig: odata_get_all vertaalt het pad naar Mímir.
+        // $base blijft de company-prefix (.../ODataV4/Company('Naam')/), geen wachtwoord.
+        $odataBase = isset($base) ? trim((string) $base) : '';
+        $odataAuth = (isset($auth) && is_array($auth)) ? $auth : [];
+    } else {
+        $odataBase = $base;
+        $odataAuth = $auth;
+    }
+    $url = $odataBase . 'AppWerkorders?$select=No,Component_No&$top=1&$filter=' . rawurlencode($query);
+    $rows = odata_get_all($url, $odataAuth, 315360000);
 
     foreach ($rows as $row) {
         if (!is_array($row)) {
