@@ -113,8 +113,8 @@ try {
     if (!is_array($entityCall) || $entityCall['url'] !== $expectedEntityUrl || $entityCall['user'] !== 'bcuser' || $entityCall['ttl'] !== 120) {
         fail('entity-fallback URL/auth/ttl klopt niet: ' . json_encode($entityCall));
     }
-    if (fallback_count() < 2) {
-        fail('elke fallback moet gelogd worden, log=' . fallback_log());
+    if (fallback_count() !== 1) {
+        fail('alleen de eerste Mímir-fout mag gelogd worden, log=' . fallback_log());
     }
     $log = fallback_log();
     if (strpos($log, 'mimir_test_key_should_not_leak') !== false || strpos($log, 'bc-secret') !== false) {
@@ -122,6 +122,24 @@ try {
     }
     if (strpos($log, '[Prometheus] Mímir failed, falling back to direct OData:') === false) {
         fail('logregel mist het verwachte prefix');
+    }
+
+    odata_mimir_circuit_reset();
+    $loggedBeforeCaller = fallback_count();
+    $callerThrew = false;
+    try {
+        odata_get_all('AppWerkorders?$select=No', $auth, 30);
+    } catch (Throwable $exception) {
+        $callerThrew = strpos($exception->getMessage(), 'kon niet worden vertaald') !== false;
+    }
+    if (!$callerThrew) {
+        fail('een onvertaalbare URL moet de oorspronkelijke fout geven');
+    }
+    if (odata_mimir_circuit_open()) {
+        fail('een fout van de aanroeper mag het circuit niet openen');
+    }
+    if (fallback_count() !== $loggedBeforeCaller) {
+        fail('een fout van de aanroeper mag geen fallback loggen');
     }
 
     odata_mimir_circuit_reset();
@@ -164,6 +182,134 @@ try {
     $liveCall = $calls[$beforeLive] ?? null;
     if (($liveRows[0]['No'] ?? '') !== 'WO-1' || !is_array($liveCall) || $liveCall['url'] !== $liveUrl || $liveCall['user'] !== 'bcuser') {
         fail('live company-URL moet ongewijzigd naar BC met globale credentials: ' . json_encode($liveCall));
+    }
+
+    $auth_list = [
+        'Production' => ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'],
+        'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'],
+    ];
+    $auth = $auth_list['Production'];
+    $GLOBALS['prometheus_company_environment_map'] = [
+        'Hunter van Twist' => 'Sandbox',
+        'KVT Gas' => 'Production',
+    ];
+    odata_mimir_circuit_reset();
+    $mimirBase = 'http://127.0.0.1:9';
+    $loggedBeforeSecondEnv = fallback_count();
+    $beforeCompanyEnv = count($calls);
+    $companyEnvRows = odata_mimir_query('Hunter van Twist', 'AppResource', ['$select' => 'No'], 30);
+    if (($companyEnvRows[0]['No'] ?? '') !== 'WO-1') {
+        fail('tweede-environment query gaf geen rijen');
+    }
+    $companyEnvCall = $calls[$beforeCompanyEnv] ?? null;
+    if (!is_array($companyEnvCall)
+        || strpos($companyEnvCall['url'], "https://bc.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppResource?") !== 0
+        || $companyEnvCall['user'] !== 'sandbox-user'
+    ) {
+        fail('query gebruikte niet het environment en de auth van het bedrijf: ' . json_encode($companyEnvCall));
+    }
+    if (fallback_count() !== $loggedBeforeSecondEnv + 1) {
+        fail('tweede environment moet precies één fallback loggen');
+    }
+
+    $loggedWhileOpen = fallback_count();
+    $beforeUrlEnv = count($calls);
+    $urlEnvRows = odata_get_all(
+        "https://mimir.invalid/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No",
+        $auth,
+        12
+    );
+    if (($urlEnvRows[0]['No'] ?? '') !== 'WO-1') {
+        fail('URL-environment fallback gaf geen rijen');
+    }
+    $urlEnvCall = $calls[$beforeUrlEnv] ?? null;
+    if (!is_array($urlEnvCall)
+        || $urlEnvCall['url'] !== "https://bc.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No"
+        || $urlEnvCall['user'] !== 'sandbox-user'
+    ) {
+        fail('URL-segment werd vervangen door het primaire environment: ' . json_encode($urlEnvCall));
+    }
+    if (fallback_count() !== $loggedWhileOpen) {
+        fail('open circuit mag niet opnieuw loggen');
+    }
+
+    odata_mimir_circuit_reset();
+    $beforeMapped = count($calls);
+    $mappedRows = odata_get_all(
+        "https://mimir.invalid/mimir/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No",
+        $auth,
+        12
+    );
+    if (($mappedRows[0]['No'] ?? '') !== 'WO-1') {
+        fail('company-map fallback gaf geen rijen');
+    }
+    $mappedCall = $calls[$beforeMapped] ?? null;
+    if (!is_array($mappedCall)
+        || strpos((string) ($mappedCall['url'] ?? ''), 'https://bc.example:7148/Sandbox/ODataV4/') !== 0
+        || $mappedCall['user'] !== 'sandbox-user'
+    ) {
+        fail('placeholder-environment negeerde de company-map: ' . json_encode($mappedCall));
+    }
+    $environment = 'mimir';
+    $cacheKey = build_cache_key(
+        "https://mimir.invalid/mimir/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders",
+        ['user' => 'sandbox-user']
+    );
+    if (substr($cacheKey, -strlen('|sandbox-user|Sandbox')) !== '|sandbox-user|Sandbox') {
+        fail('cache-key gebruikt geen echte BC-environment: ' . $cacheKey);
+    }
+    $environment = 'Production';
+    if (strpos(fallback_log(), 'sandbox-secret') !== false || strpos(fallback_log(), 'bc-secret') !== false) {
+        fail('log bevat een geheim na company-environment fallback');
+    }
+
+    $auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+    $auth_list = [
+        'Production' => $auth,
+        'Broken' => ['mode' => 'basic', 'user' => '', 'pass' => 'broken-secret'],
+        'mimir' => ['mode' => 'basic', 'user' => 'mimir-user', 'pass' => 'mimir-secret'],
+    ];
+    $environment = 'Production';
+    $baseUrl = 'https://bc.example:7148/';
+    $base = "https://bc.example:7148/Production/ODataV4/Company('KVT Gas')/";
+    odata_mimir_circuit_reset();
+    $beforeUnusable = count($calls);
+    $unusableNames = odata_mimir_list_companies(null);
+    if ($unusableNames !== $expectedNames) {
+        fail('companylijst met onbruikbare omgeving gaf ' . json_encode($unusableNames));
+    }
+    $unusableCalls = array_slice($calls, $beforeUnusable);
+    if (count($unusableCalls) !== 1
+        || strpos($unusableCalls[0]['url'], 'https://bc.example:7148/Production/ODataV4/Company') !== 0
+        || $unusableCalls[0]['user'] !== 'bcuser'
+    ) {
+        fail('onbruikbare auth_list-omgeving werd toch opgehaald: ' . json_encode($unusableCalls));
+    }
+    $beforeBrokenFilter = count($calls);
+    $brokenFilterThrew = false;
+    try {
+        odata_direct_companies_as_rows('Broken');
+    } catch (Throwable $exception) {
+        $brokenFilterThrew = true;
+    }
+    if (!$brokenFilterThrew || count($calls) !== $beforeBrokenFilter) {
+        fail('filter op omgeving zonder credentials mag niet met andere auth fetchen: ' . json_encode(array_slice($calls, $beforeBrokenFilter)));
+    }
+
+    $baseUrl = '';
+    $auth_list = [];
+    $environment = 'Production';
+    $auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+    $base = "https://bc.example:7148/Production/ODataV4/Company('KVT Gas')/";
+    $beforeBaseOnly = count($calls);
+    $baseOnlyRows = odata_direct_companies_as_rows(null);
+    $baseOnlyCall = $calls[$beforeBaseOnly] ?? null;
+    if (($baseOnlyRows[0]['Name'] ?? '') === ''
+        || !is_array($baseOnlyCall)
+        || $baseOnlyCall['user'] !== 'bcuser'
+        || strpos($baseOnlyCall['url'], 'https://bc.example:7148/Production/ODataV4/Company') !== 0
+    ) {
+        fail('companylijst via $base moet globale credentials houden: ' . json_encode($baseOnlyCall));
     }
 
     odata_mimir_circuit_reset();
@@ -250,6 +396,59 @@ PHP);
         fail('lege $mimirApi moet de oude directe route ongewijzigd gebruiken: ' . json_encode($directCall));
     }
 
+    $tmpAuth = sys_get_temp_dir() . '/prometheus-auth-fallback-' . getmypid() . '.php';
+    file_put_contents($tmpAuth, <<<'PHP'
+<?php
+$baseUrl = 'https://loaded-bc.example:7148/';
+$environment = 'LoadedEnv';
+$base = "https://loaded-bc.example:7148/LoadedEnv/ODataV4/Company('X')/";
+$auth_list = [
+    'LoadedEnv' => ['mode' => 'basic', 'user' => 'loaded-user', 'pass' => 'loaded-secret'],
+];
+$auth = $auth_list['LoadedEnv'];
+PHP);
+    $baseUrl = '';
+    $environment = '';
+    $auth = [];
+    $auth_list = [];
+    $base = '';
+    unset($GLOBALS['PROMETHEUS_BC_AUTH_LOAD_TRIED']);
+    $GLOBALS['PROMETHEUS_AUTH_PHP_PATH'] = $tmpAuth;
+    odata_ensure_bc_auth_loaded();
+    $loadedBase = (string) ($GLOBALS['baseUrl'] ?? '');
+    $loadedUser = (string) ($GLOBALS['auth_list']['LoadedEnv']['user'] ?? '');
+    $loadedEnv = (string) ($GLOBALS['environment'] ?? '');
+    $loadedCompanyBase = (string) ($GLOBALS['base'] ?? '');
+    require_once $tmpAuth;
+    if ($loadedBase !== 'https://loaded-bc.example:7148/' || (string) ($GLOBALS['baseUrl'] ?? '') !== $loadedBase) {
+        fail('auth.php-variabelen bleven buiten $GLOBALS, base=' . var_export($GLOBALS['baseUrl'] ?? null, true));
+    }
+    if ($loadedUser !== 'loaded-user' || $loadedEnv !== 'LoadedEnv') {
+        fail('auth_list/environment uit auth.php zijn niet globaal: user=' . $loadedUser . ' env=' . $loadedEnv);
+    }
+    if (strpos($loadedCompanyBase, '/LoadedEnv/') === false) {
+        fail('base uit auth.php is niet naar $GLOBALS gekopieerd: ' . $loadedCompanyBase);
+    }
+
+    $GLOBALS['baseUrl'] = 'https://kept.example/';
+    $environment = '';
+    $auth = [];
+    $auth_list = [];
+    $base = '';
+    unset($GLOBALS['PROMETHEUS_BC_AUTH_LOAD_TRIED']);
+    odata_ensure_bc_auth_loaded();
+    if ((string) ($GLOBALS['baseUrl'] ?? '') !== 'https://kept.example/') {
+        fail('gezette baseUrl werd overschreven: ' . var_export($GLOBALS['baseUrl'] ?? null, true));
+    }
+    if ((string) ($GLOBALS['auth_list']['LoadedEnv']['user'] ?? '') !== 'loaded-user' || (string) ($GLOBALS['environment'] ?? '') !== 'LoadedEnv') {
+        fail('lege globals werden niet aangevuld vanuit auth.php');
+    }
+    if (strpos(fallback_log(), 'loaded-secret') !== false) {
+        fail('log bevat het wachtwoord uit auth.php');
+    }
+    @unlink($tmpAuth);
+    unset($GLOBALS['PROMETHEUS_AUTH_PHP_PATH']);
+
     echo "OK\n";
 } finally {
     if ($authExisted && is_string($authBackup)) {
@@ -257,4 +456,8 @@ PHP);
     } elseif (is_file($authPath)) {
         @unlink($authPath);
     }
+    if (isset($tmpAuth) && is_string($tmpAuth) && is_file($tmpAuth)) {
+        @unlink($tmpAuth);
+    }
+    unset($GLOBALS['PROMETHEUS_AUTH_PHP_PATH']);
 }
