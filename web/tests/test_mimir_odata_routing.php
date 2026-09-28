@@ -269,8 +269,16 @@ if ($authExistedBefore) {
 }
 $authWritten = false;
 $createdCache = [];
+$authParkPath = '';
 
 try {
+    if ($authExistedBefore && is_string($authBackup)) {
+        $authParkPath = sys_get_temp_dir() . '/prometheus-auth-park-' . getmypid() . '.php';
+        if (!@rename($authPath, $authParkPath)) {
+            throw new RuntimeException('auth.php kon niet tijdelijk weggezet worden.');
+        }
+    }
+
     test_assert('Mímir aan met key en zonder BC-globals', odata_mimir_enabled() === true);
 
     $untranslated = false;
@@ -407,6 +415,13 @@ try {
         }
     }
     test_restore_auth_php($authPath, $authExistedBefore, $authBackup, $authWritten);
+    if ($authParkPath !== '' && is_file($authParkPath)) {
+        if (!is_file($authPath)) {
+            rename($authParkPath, $authPath);
+        } else {
+            @unlink($authParkPath);
+        }
+    }
     foreach ($createdCache as $cacheFile) {
         if (is_string($cacheFile) && is_file($cacheFile)) {
             @unlink($cacheFile);
