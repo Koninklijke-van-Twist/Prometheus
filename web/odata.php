@@ -205,7 +205,10 @@ function odata_bc_environment_list(?string $environmentFilter = null): array
     $envs = [];
     global $auth_list;
     if (isset($auth_list) && is_array($auth_list)) {
-        foreach (array_keys($auth_list) as $key) {
+        foreach ($auth_list as $key => $entry) {
+            if (!odata_auth_is_usable($entry)) {
+                continue;
+            }
             $env = trim((string) $key);
             if ($env === '' || strcasecmp($env, 'mimir') === 0) {
                 continue;
@@ -244,6 +247,30 @@ function odata_bc_auth_for_environment(?string $env): ?array
         }
     }
     return null;
+}
+
+function odata_bc_auth_list_contains_environment(?string $env): bool
+{
+    if ($env === null) {
+        return false;
+    }
+    $env = trim($env);
+    if ($env === '') {
+        return false;
+    }
+    global $auth_list;
+    if (!isset($auth_list) || !is_array($auth_list)) {
+        return false;
+    }
+    if (array_key_exists($env, $auth_list)) {
+        return true;
+    }
+    foreach (array_keys($auth_list) as $key) {
+        if (strcasecmp((string) $key, $env) === 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function odata_bc_mapped_environment(string $company): ?string
@@ -688,7 +715,7 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
     $fetched = false;
     if ($base !== null) {
         foreach ($envs as $env) {
-            $auth = odata_bc_auth_for_company_env($env, []);
+            $auth = odata_bc_auth_for_environment($env);
             if ($auth === null) {
                 continue;
             }
@@ -712,7 +739,11 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
     }
 
     $env = $envs[0] ?? odata_bc_environment();
-    $auth = odata_bc_auth_for_company_env(is_string($env) ? $env : null, []);
+    $envName = is_string($env) ? $env : null;
+    $auth = odata_bc_auth_for_environment($envName);
+    if ($auth === null && !odata_bc_auth_list_contains_environment($envName)) {
+        $auth = odata_bc_auth_for_fallback([]);
+    }
     $url = null;
     $companyBase = odata_bc_company_base();
     if ($companyBase !== null && preg_match('#^(https?://.+)/ODataV4/Company\\([^)]*\\)/?$#i', $companyBase, $match) === 1) {
@@ -723,8 +754,8 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
         if (is_string($derivedEnv) && $derivedEnv !== '' && strcasecmp($derivedEnv, 'mimir') !== 0) {
             $env = $derivedEnv;
             $url = $match[1] . '/ODataV4/Company';
-            if ($auth === null) {
-                $auth = odata_bc_auth_for_company_env($env, []);
+            if ($auth === null && !odata_bc_auth_list_contains_environment($env)) {
+                $auth = odata_bc_auth_for_fallback([]);
             }
         }
     }

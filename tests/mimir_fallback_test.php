@@ -263,6 +263,55 @@ try {
         fail('log bevat een geheim na company-environment fallback');
     }
 
+    $auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+    $auth_list = [
+        'Production' => $auth,
+        'Broken' => ['mode' => 'basic', 'user' => '', 'pass' => 'broken-secret'],
+        'mimir' => ['mode' => 'basic', 'user' => 'mimir-user', 'pass' => 'mimir-secret'],
+    ];
+    $environment = 'Production';
+    $baseUrl = 'https://bc.example:7148/';
+    $base = "https://bc.example:7148/Production/ODataV4/Company('KVT Gas')/";
+    odata_mimir_circuit_reset();
+    $beforeUnusable = count($calls);
+    $unusableNames = odata_mimir_list_companies(null);
+    if ($unusableNames !== $expectedNames) {
+        fail('companylijst met onbruikbare omgeving gaf ' . json_encode($unusableNames));
+    }
+    $unusableCalls = array_slice($calls, $beforeUnusable);
+    if (count($unusableCalls) !== 1
+        || strpos($unusableCalls[0]['url'], 'https://bc.example:7148/Production/ODataV4/Company') !== 0
+        || $unusableCalls[0]['user'] !== 'bcuser'
+    ) {
+        fail('onbruikbare auth_list-omgeving werd toch opgehaald: ' . json_encode($unusableCalls));
+    }
+    $beforeBrokenFilter = count($calls);
+    $brokenFilterThrew = false;
+    try {
+        odata_direct_companies_as_rows('Broken');
+    } catch (Throwable $exception) {
+        $brokenFilterThrew = true;
+    }
+    if (!$brokenFilterThrew || count($calls) !== $beforeBrokenFilter) {
+        fail('filter op omgeving zonder credentials mag niet met andere auth fetchen: ' . json_encode(array_slice($calls, $beforeBrokenFilter)));
+    }
+
+    $baseUrl = '';
+    $auth_list = [];
+    $environment = 'Production';
+    $auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+    $base = "https://bc.example:7148/Production/ODataV4/Company('KVT Gas')/";
+    $beforeBaseOnly = count($calls);
+    $baseOnlyRows = odata_direct_companies_as_rows(null);
+    $baseOnlyCall = $calls[$beforeBaseOnly] ?? null;
+    if (($baseOnlyRows[0]['Name'] ?? '') === ''
+        || !is_array($baseOnlyCall)
+        || $baseOnlyCall['user'] !== 'bcuser'
+        || strpos($baseOnlyCall['url'], 'https://bc.example:7148/Production/ODataV4/Company') !== 0
+    ) {
+        fail('companylijst via $base moet globale credentials houden: ' . json_encode($baseOnlyCall));
+    }
+
     odata_mimir_circuit_reset();
     $mimirApi = 'mimir_test_key_should_not_leak';
     $mimirBase = 'http://127.0.0.1:9';
