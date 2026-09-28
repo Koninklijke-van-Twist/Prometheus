@@ -449,6 +449,111 @@ PHP);
     @unlink($tmpAuth);
     unset($GLOBALS['PROMETHEUS_AUTH_PHP_PATH']);
 
+    odata_mimir_circuit_reset();
+    $mimirApi = 'mimir_test_key_should_not_leak';
+    $mimirBase = 'http://127.0.0.1:9';
+    $baseUrl = 'https://bc.example:7148/';
+    $environment = 'Production';
+    $auth = ['mode' => 'basic', 'user' => 'auth-only', 'pass' => 'auth-only-secret'];
+    $auth_list = null;
+    $base = '';
+    unset($GLOBALS['prometheus_company_environment_map']);
+    $beforeAuthOnly = count($calls);
+    $authOnlyQuery = odata_mimir_query('KVT Gas', 'AppResource', ['$select' => 'No'], 30);
+    $authOnlyQueryCall = $calls[$beforeAuthOnly] ?? null;
+    if (($authOnlyQuery[0]['No'] ?? '') !== 'WO-1'
+        || !is_array($authOnlyQueryCall)
+        || $authOnlyQueryCall['user'] !== 'auth-only'
+        || strpos($authOnlyQueryCall['url'], "https://bc.example:7148/Production/ODataV4/Company('KVT%20Gas')/AppResource?") !== 0
+    ) {
+        fail('alleen $auth moet de query naar BC sturen: ' . json_encode($authOnlyQueryCall));
+    }
+    $beforeAuthOnlyFetch = count($calls);
+    $authOnlyFetch = odata_mimir_fetch_all(
+        "https://mimir.invalid/Production/ODataV4/Company('KVT%20Gas')/AppWerkorders?\$select=No",
+        15
+    );
+    $authOnlyFetchCall = $calls[$beforeAuthOnlyFetch] ?? null;
+    if (($authOnlyFetch[0]['No'] ?? '') !== 'WO-1'
+        || !is_array($authOnlyFetchCall)
+        || $authOnlyFetchCall['user'] !== 'auth-only'
+        || $authOnlyFetchCall['url'] !== "https://bc.example:7148/Production/ODataV4/Company('KVT%20Gas')/AppWerkorders?\$select=No"
+    ) {
+        fail('alleen $auth moet de URL-fetch naar BC sturen: ' . json_encode($authOnlyFetchCall));
+    }
+    $beforeAuthOnlyCompanies = count($calls);
+    $authOnlyCompanies = odata_direct_companies_as_rows(null);
+    $authOnlyCompanyCall = $calls[$beforeAuthOnlyCompanies] ?? null;
+    if (($authOnlyCompanies[0]['Name'] ?? '') === ''
+        || !is_array($authOnlyCompanyCall)
+        || $authOnlyCompanyCall['user'] !== 'auth-only'
+        || strpos($authOnlyCompanyCall['url'], 'https://bc.example:7148/Production/ODataV4/Company') !== 0
+    ) {
+        fail('alleen $auth moet de companylijst uit $baseUrl + $environment halen: ' . json_encode($authOnlyCompanyCall));
+    }
+    if (strpos(fallback_log(), 'auth-only-secret') !== false) {
+        fail('log bevat het wachtwoord uit $auth');
+    }
+
+    odata_mimir_circuit_reset();
+    $mimirBase = 'http://127.0.0.1:9';
+    $baseUrl = 'https://bc.example:7148/';
+    $environment = 'Production';
+    $auth = ['mode' => 'basic', 'user' => 'primary-user', 'pass' => 'primary-secret'];
+    $auth_list = [
+        'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'],
+    ];
+    $base = '';
+    unset($GLOBALS['prometheus_company_environment_map']);
+    $beforeUnmapped = count($calls);
+    $unmappedRows = odata_mimir_query('Unmapped Co', 'AppResource', ['$select' => 'No'], 20);
+    $unmappedCall = $calls[$beforeUnmapped] ?? null;
+    if (($unmappedRows[0]['No'] ?? '') !== 'WO-1'
+        || !is_array($unmappedCall)
+        || $unmappedCall['user'] !== 'primary-user'
+        || strpos($unmappedCall['url'], "https://bc.example:7148/Production/ODataV4/Company('Unmapped%20Co')/AppResource?") !== 0
+    ) {
+        fail('unmapped bedrijf moet via $auth naar de primaire environment: ' . json_encode($unmappedCall));
+    }
+
+    odata_mimir_circuit_reset();
+    $mimirBase = 'http://127.0.0.1:9';
+    $baseUrl = 'https://bc.example:7148/';
+    $environment = 'Production';
+    $auth_list = [
+        'Production' => ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'],
+    ];
+    $auth = $auth_list['Production'];
+    $base = '';
+    unset($GLOBALS['prometheus_company_environment_map']);
+    $beforeSandboxUrl = count($calls);
+    $sandboxUrlThrew = false;
+    try {
+        odata_get_all(
+            "https://mimir.invalid/Sandbox/ODataV4/Company('X')/AppWerkorders?\$select=No",
+            $auth,
+            15
+        );
+    } catch (Throwable $exception) {
+        $sandboxUrlThrew = strpos($exception->getMessage(), 'Mímir') !== false;
+    }
+    if (!$sandboxUrlThrew || count($calls) !== $beforeSandboxUrl) {
+        fail('Sandbox-URL zonder eigen credentials moet weigeren zonder BC-call: ' . json_encode(array_slice($calls, $beforeSandboxUrl)));
+    }
+    $beforeSandboxFetch = count($calls);
+    $sandboxFetchThrew = false;
+    try {
+        odata_mimir_fetch_all(
+            "https://mimir.invalid/Sandbox/ODataV4/Company('X')/AppWerkorders?\$select=No",
+            15
+        );
+    } catch (Throwable $exception) {
+        $sandboxFetchThrew = strpos($exception->getMessage(), 'Mímir') !== false;
+    }
+    if (!$sandboxFetchThrew || count($calls) !== $beforeSandboxFetch) {
+        fail('fetch_all Sandbox-URL moet weigeren zonder BC-call: ' . json_encode(array_slice($calls, $beforeSandboxFetch)));
+    }
+
     echo "OK\n";
 } finally {
     if ($authExisted && is_string($authBackup)) {
