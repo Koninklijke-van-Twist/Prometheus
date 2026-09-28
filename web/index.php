@@ -381,7 +381,7 @@ function fetchComponentNoFromBc(string $workOrder): string
         $odataBase = $base;
         $odataAuth = $auth;
     }
-    $url = $odataBase . 'AppWerkorders?$select=No,Component_No&$top=1&$filter=' . rawurlencode($query);
+    $url = $odataBase . 'AppWerkorders?$select=Component_No&$top=1&$filter=' . rawurlencode($query);
     $rows = odata_get_all($url, $odataAuth, 315360000);
 
     foreach ($rows as $row) {
