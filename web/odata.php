@@ -761,7 +761,6 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
     $envs = odata_bc_environment_list($environmentFilter);
     $out = [];
     $fetched = false;
-    $companySelect = '?$select=Name';
     if ($base !== null) {
         foreach ($envs as $env) {
             $auth = odata_bc_auth_for_environment($env);
@@ -769,7 +768,7 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
                 continue;
             }
             $fetched = true;
-            $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company' . $companySelect;
+            $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company';
             $rows = odata_get_all_direct($url, $auth, 300);
             foreach ($rows as $row) {
                 if (!is_array($row)) {
@@ -802,14 +801,14 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
         }
         if (is_string($derivedEnv) && $derivedEnv !== '' && strcasecmp($derivedEnv, 'mimir') !== 0) {
             $env = $derivedEnv;
-            $url = $match[1] . '/ODataV4/Company' . $companySelect;
+            $url = $match[1] . '/ODataV4/Company';
             if ($auth === null && !odata_bc_auth_list_contains_environment($env) && odata_bc_may_use_shared_auth($env)) {
                 $auth = odata_bc_auth_for_fallback([]);
             }
         }
     }
     if ($url === null && $base !== null && is_string($env) && $env !== '' && strcasecmp($env, 'mimir') !== 0 && $auth !== null && odata_bc_may_use_shared_auth($env)) {
-        $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company' . $companySelect;
+        $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company';
     }
 
     if ($url === null || !is_string($env) || $env === '' || $auth === null) {
